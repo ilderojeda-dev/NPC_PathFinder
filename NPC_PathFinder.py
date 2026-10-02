@@ -1,6 +1,9 @@
+import matplotlib.pyplot as plt
+from matplotlib.colors import ListedColormap
+
+
 def leer_mapa(ruta):
     with open(ruta, "r") as archivo:
-
         lineas = archivo.readlines()
 
     # Buscar dónde empieza realmente el mapa
@@ -14,43 +17,189 @@ def leer_mapa(ruta):
     return mapa
 
 
-mapa = leer_mapa("dataset/darkforest.map")
+def visualizar_mapa(mapa):
+    matriz = []
 
+    for fila in mapa:
+        nueva_fila = []
+
+        for celda in fila:
+            if celda == ".":
+                nueva_fila.append(1)   # zona transitable
+            else:
+                nueva_fila.append(0)   # W, T, @ = no transitable
+
+        matriz.append(nueva_fila)
+
+    print("Generando visualización del mapa completo...")
+
+    colores = ListedColormap(["black", "lightgray"])
+
+    plt.figure(figsize=(10, 10))
+    plt.imshow(
+        matriz,
+        cmap=colores,
+        interpolation="nearest",
+        origin="upper"   # fila 0 arriba
+    )
+
+    plt.title("Mapa Dark Forest - Warcraft III")
+    plt.xlabel("Columnas")
+    plt.ylabel("Filas")
+
+    plt.savefig(
+        "darkforest_visualizacion.png",
+        dpi=300,
+        bbox_inches="tight"
+    )
+
+    print("Imagen guardada: darkforest_visualizacion.png")
+
+    plt.show()
+
+
+def crear_grafo(mapa):
+    grafo = {}
+
+    filas = len(mapa)
+    columnas = len(mapa[0])
+
+    # Movimientos posibles:
+    # arriba, abajo, izquierda, derecha
+    movimientos = [
+        (-1, 0),   # arriba
+        (1, 0),    # abajo
+        (0, -1),   # izquierda
+        (0, 1)     # derecha
+    ]
+
+    for fila in range(filas):
+        for columna in range(columnas):
+
+            # Solo las zonas transitables se convierten en nodos
+            if mapa[fila][columna] == ".":
+
+                nodo = (fila, columna)
+                grafo[nodo] = []
+
+                # Revisar vecinos
+                for movimiento_fila, movimiento_columna in movimientos:
+                    nueva_fila = fila + movimiento_fila
+                    nueva_columna = columna + movimiento_columna
+
+                    # Verificar que no salga del mapa
+                    if (
+                        0 <= nueva_fila < filas and
+                        0 <= nueva_columna < columnas
+                    ):
+                        # Si el vecino también es transitable
+                        if mapa[nueva_fila][nueva_columna] == ".":
+                            vecino = (nueva_fila, nueva_columna)
+                            grafo[nodo].append(vecino)
+
+    return grafo
+
+
+def contar_aristas(grafo):
+    cantidad = 0
+
+    for nodo in grafo:
+        cantidad += len(grafo[nodo])
+
+    # Cada arista aparece dos veces:
+    # A -> B y B -> A
+    return cantidad // 2
+
+
+def visualizar_subgrafo(grafo, fila_inicio, columna_inicio, tamano):
+    fig, ax = plt.subplots(figsize=(10, 10))
+
+    fila_final = fila_inicio + tamano
+    columna_final = columna_inicio + tamano
+
+    # Dibujar aristas
+    for nodo in grafo:
+        fila, columna = nodo
+
+        if (
+            fila_inicio <= fila < fila_final and
+            columna_inicio <= columna < columna_final
+        ):
+            for vecino in grafo[nodo]:
+                fila_vecino, columna_vecino = vecino
+
+                if (
+                    fila_inicio <= fila_vecino < fila_final and
+                    columna_inicio <= columna_vecino < columna_final
+                ):
+                    ax.plot(
+                        [columna, columna_vecino],
+                        [fila, fila_vecino],
+                        color="red",
+                        linewidth=1
+                    )
+
+    # Dibujar nodos
+    for nodo in grafo:
+        fila, columna = nodo
+
+        if (
+            fila_inicio <= fila < fila_final and
+            columna_inicio <= columna < columna_final
+        ):
+            ax.scatter(
+                columna,
+                fila,
+                color="blue",
+                s=25
+            )
+
+    ax.set_title("Subgrafo del mapa Dark Forest")
+    ax.set_xlabel("Columnas")
+    ax.set_ylabel("Filas")
+
+    # Eje X: izquierda -> derecha
+    ax.set_xlim(columna_inicio - 0.5, columna_final - 0.5)
+
+    # Eje Y: arriba -> abajo
+    ax.set_ylim(fila_final - 0.5, fila_inicio - 0.5)
+
+    ax.set_aspect("equal")
+    ax.grid()
+
+    plt.savefig(
+        "darkforest_subgrafo.png",
+        dpi=300,
+        bbox_inches="tight"
+    )
+
+    print("Imagen guardada: darkforest_subgrafo.png")
+
+    plt.show()
+
+
+# -------------------------
+# Programa principal
+# -------------------------
+
+mapa = leer_mapa("dataset/darkforest.map")
 
 print("Filas:", len(mapa))
 print("Columnas:", len(mapa[0]))
 
-print(mapa[0][:20])
+# Visualización del mapa completo
 
-def contar_nodos(mapa):
+# visualizar_mapa(mapa)
 
-    contador = 0
+grafo = crear_grafo(mapa)
 
-    for fila in mapa:
-        for posicion in fila:
+print("Cantidad de nodos del grafo:", len(grafo))
+print("Cantidad de aristas:", contar_aristas(grafo))
 
-            if posicion == ".":
-                contador += 1
-
-    return contador
-
-
-cantidad = contar_nodos(mapa)
-
-print("Cantidad de nodos:", cantidad)
-
-def mostrar_mapa(mapa, filas=30, columnas=50):
-
-    for i in range(filas):
-        print("".join(mapa[i][:columnas]))
-
-
-mostrar_mapa(mapa, filas=40, columnas=80)
-
-def mostrar_fragmento(mapa, inicio_fila, inicio_columna, filas, columnas):
-
-    for i in range(inicio_fila, inicio_fila + filas):
-        print("".join(mapa[i][inicio_columna:inicio_columna + columnas]))
-
-
-mostrar_fragmento(mapa, 100, 100, 40, 80)
+# Visualización de un subgrafo
+visualizar_subgrafo(
+    grafo,
+    fila_inicio=100,
+    columna_inicio=300,
+    tamano=20
+)
