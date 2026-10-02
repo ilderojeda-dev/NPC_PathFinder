@@ -178,6 +178,8 @@ def visualizar_subgrafo(grafo, fila_inicio, columna_inicio, tamano):
     plt.show()
 
 
+
+
 # -------------------------
 # Programa principal
 # -------------------------
@@ -199,7 +201,7 @@ print("Cantidad de aristas:", contar_aristas(grafo))
 # Visualización de un subgrafo
 visualizar_subgrafo(
     grafo,
-    fila_inicio=100,
-    columna_inicio=300,
+    fila_inicio=55,
+    columna_inicio=90,
     tamano=20
-)
+)  
