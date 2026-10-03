@@ -337,7 +337,7 @@ print("Cantidad de aristas:", contar_aristas(grafo))
     tamano=20
 )  '''
 inicio = (100, 200)
-objetivo = (200, 219)
+objetivo = (420, 300)
 
 '''ruta, visitados = bfs_busqueda(
     grafo,
