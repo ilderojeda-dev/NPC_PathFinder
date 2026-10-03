@@ -1,6 +1,6 @@
 import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap
-
+from collections import deque
 
 def leer_mapa(ruta):
     with open(ruta, "r") as archivo:
@@ -179,7 +179,138 @@ def visualizar_subgrafo(grafo, fila_inicio, columna_inicio, tamano):
 
 
 
+def bfs_busqueda(grafo, inicio, objetivo):
 
+    cola = deque([inicio])
+
+    visitados = set()
+    visitados.add(inicio)
+
+    # Guarda de qué nodo venimos
+    anterior = {
+        inicio: None
+    }
+
+    while cola:
+
+        nodo_actual = cola.popleft()
+
+        # Si encontramos el objetivo
+        if nodo_actual == objetivo:
+            break
+
+        # Revisar vecinos
+        for vecino in grafo[nodo_actual]:
+
+            if vecino not in visitados:
+
+                visitados.add(vecino)
+                anterior[vecino] = nodo_actual
+                cola.append(vecino)
+
+    # Si nunca encontramos el objetivo
+    if objetivo not in anterior:
+        return None, visitados
+
+    # Reconstruir la ruta
+    ruta = []
+
+    nodo = objetivo
+
+    while nodo is not None:
+        ruta.append(nodo)
+        nodo = anterior[nodo]
+
+    ruta.reverse()
+
+    return ruta, visitados
+def visualizar_ruta(mapa, ruta, inicio, objetivo):
+
+    # Verificar que exista una ruta
+    if ruta is None:
+        print("No existe una ruta para visualizar.")
+        return
+
+    matriz = []
+
+    # Convertir mapa a 0 y 1
+    for fila in mapa:
+        nueva_fila = []
+
+        for celda in fila:
+
+            if celda == ".":
+                nueva_fila.append(1)   # transitable
+            else:
+                nueva_fila.append(0)   # obstáculo
+
+        matriz.append(nueva_fila)
+
+    colores = ListedColormap(["black", "lightgray"])
+
+    fig, ax = plt.subplots(figsize=(10, 10))
+
+    # Mostrar mapa
+    ax.imshow(
+        matriz,
+        cmap=colores,
+        interpolation="nearest",
+        origin="upper"
+    )
+
+    # Separar las coordenadas de la ruta
+    filas_ruta = []
+    columnas_ruta = []
+
+    for nodo in ruta:
+
+        fila, columna = nodo
+
+        filas_ruta.append(fila)
+        columnas_ruta.append(columna)
+
+    # Dibujar ruta
+    ax.plot(
+        columnas_ruta,
+        filas_ruta,
+        color="blue",
+        linewidth=2,
+        label="Ruta BFS"
+    )
+
+    # Dibujar inicio
+    ax.scatter(
+        inicio[1],
+        inicio[0],
+        color="green",
+        s=80,
+        label="Inicio"
+    )
+
+    # Dibujar objetivo
+    ax.scatter(
+        objetivo[1],
+        objetivo[0],
+        color="red",
+        s=80,
+        label="Objetivo"
+    )
+
+    ax.set_title("Ruta encontrada mediante BFS")
+    ax.set_xlabel("Columnas")
+    ax.set_ylabel("Filas")
+
+    ax.legend()
+
+    plt.savefig(
+        "ruta_bfs.png",
+        dpi=300,
+        bbox_inches="tight"
+    )
+
+    print("Imagen guardada: ruta_bfs.png")
+
+    plt.show()
 # -------------------------
 # Programa principal
 # -------------------------
@@ -199,9 +330,57 @@ print("Cantidad de nodos del grafo:", len(grafo))
 print("Cantidad de aristas:", contar_aristas(grafo))
 
 # Visualización de un subgrafo
-visualizar_subgrafo(
+'''visualizar_subgrafo(
     grafo,
     fila_inicio=55,
     columna_inicio=90,
     tamano=20
-)  
+)  '''
+inicio = (100, 200)
+objetivo = (200, 219)
+
+'''ruta, visitados = bfs_busqueda(
+    grafo,
+    inicio,
+    objetivo
+)
+
+if ruta is not None:
+
+    print("Ruta encontrada")
+    print("Cantidad de movimientos:", len(ruta) - 1)
+    print("Nodos explorados:", len(visitados))
+
+else:
+
+    print("No existe una ruta entre los puntos.")'''
+    
+if inicio not in grafo:
+    print("El punto inicial no es transitable.")
+
+elif objetivo not in grafo:
+    print("El objetivo no es transitable.")
+
+else:
+
+    ruta, visitados = bfs_busqueda(
+        grafo,
+        inicio,
+        objetivo
+    )
+
+    if ruta is not None:
+
+        print("Ruta encontrada.")
+        print("Movimientos:", len(ruta) - 1)
+        print("Nodos explorados:", len(visitados))
+
+        visualizar_ruta(
+            mapa,
+            ruta,
+            inicio,
+            objetivo
+        )
+
+    else:
+        print("No existe una ruta entre esos puntos.")
