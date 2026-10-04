@@ -322,7 +322,7 @@ print("Columnas:", len(mapa[0]))
 
 # Visualización del mapa completo
 
-# visualizar_mapa(mapa)
+visualizar_mapa(mapa)
 
 grafo = crear_grafo(mapa)
 
@@ -330,31 +330,16 @@ print("Cantidad de nodos del grafo:", len(grafo))
 print("Cantidad de aristas:", contar_aristas(grafo))
 
 # Visualización de un subgrafo
-'''visualizar_subgrafo(
+visualizar_subgrafo(
     grafo,
     fila_inicio=55,
     columna_inicio=90,
     tamano=20
-)  '''
+)
 inicio = (100, 200)
 objetivo = (420, 300)
 
-'''ruta, visitados = bfs_busqueda(
-    grafo,
-    inicio,
-    objetivo
-)
-
-if ruta is not None:
-
-    print("Ruta encontrada")
-    print("Cantidad de movimientos:", len(ruta) - 1)
-    print("Nodos explorados:", len(visitados))
-
-else:
-
-    print("No existe una ruta entre los puntos.")'''
-    
+# Verificar que los puntos sean transitables
 if inicio not in grafo:
     print("El punto inicial no es transitable.")
 
@@ -372,7 +357,7 @@ else:
     if ruta is not None:
 
         print("Ruta encontrada.")
-        print("Movimientos:", len(ruta) - 1)
+        print("Cantidad de movimientos:", len(ruta) - 1)
         print("Nodos explorados:", len(visitados))
 
         visualizar_ruta(
@@ -383,4 +368,4 @@ else:
         )
 
     else:
-        print("No existe una ruta entre esos puntos.")
+        print("No existe una ruta entre los puntos.")
