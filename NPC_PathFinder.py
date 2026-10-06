@@ -6,7 +6,6 @@ def leer_mapa(ruta):
     with open(ruta, "r") as archivo:
         lineas = archivo.readlines()
 
-    # Buscar dónde empieza realmente el mapa
     inicio_mapa = lineas.index("map\n") + 1
 
     mapa = []
@@ -17,30 +16,36 @@ def leer_mapa(ruta):
     return mapa
 
 
-def visualizar_mapa(mapa):
+def convertir_a_matriz(mapa):
     matriz = []
 
     for fila in mapa:
         nueva_fila = []
 
         for celda in fila:
+
             if celda == ".":
-                nueva_fila.append(1)   # zona transitable
+                nueva_fila.append(1)   # transitable
             else:
-                nueva_fila.append(0)   # W, T, @ = no transitable
+                nueva_fila.append(0)   # obstáculo
 
         matriz.append(nueva_fila)
+
+    return matriz
+
+def visualizar_mapa(matriz):
 
     print("Generando visualización del mapa completo...")
 
     colores = ListedColormap(["black", "lightgray"])
 
     plt.figure(figsize=(10, 10))
+
     plt.imshow(
         matriz,
         cmap=colores,
         interpolation="nearest",
-        origin="upper"   # fila 0 arriba
+        origin="upper"
     )
 
     plt.title("Mapa Dark Forest - Warcraft III")
@@ -57,15 +62,12 @@ def visualizar_mapa(mapa):
 
     plt.show()
 
-
-def crear_grafo(mapa):
+def crear_grafo(matriz):
     grafo = {}
 
-    filas = len(mapa)
-    columnas = len(mapa[0])
+    filas = len(matriz)
+    columnas = len(matriz[0])
 
-    # Movimientos posibles:
-    # arriba, abajo, izquierda, derecha
     movimientos = [
         (-1, 0),   # arriba
         (1, 0),    # abajo
@@ -74,27 +76,32 @@ def crear_grafo(mapa):
     ]
 
     for fila in range(filas):
+
         for columna in range(columnas):
 
-            # Solo las zonas transitables se convierten en nodos
-            if mapa[fila][columna] == ".":
+            # 1 significa que la posición es transitable
+            if matriz[fila][columna] == 1:
 
                 nodo = (fila, columna)
                 grafo[nodo] = []
 
-                # Revisar vecinos
                 for movimiento_fila, movimiento_columna in movimientos:
+
                     nueva_fila = fila + movimiento_fila
                     nueva_columna = columna + movimiento_columna
 
-                    # Verificar que no salga del mapa
                     if (
-                        0 <= nueva_fila < filas and
-                        0 <= nueva_columna < columnas
+                        0 <= nueva_fila < filas
+                        and 0 <= nueva_columna < columnas
                     ):
-                        # Si el vecino también es transitable
-                        if mapa[nueva_fila][nueva_columna] == ".":
-                            vecino = (nueva_fila, nueva_columna)
+
+                        if matriz[nueva_fila][nueva_columna] == 1:
+
+                            vecino = (
+                                nueva_fila,
+                                nueva_columna
+                            )
+
                             grafo[nodo].append(vecino)
 
     return grafo
@@ -179,6 +186,7 @@ def visualizar_subgrafo(grafo, fila_inicio, columna_inicio, tamano):
 
 
 
+
 def bfs_busqueda(grafo, inicio, objetivo):
 
     cola = deque([inicio])
@@ -224,33 +232,16 @@ def bfs_busqueda(grafo, inicio, objetivo):
     ruta.reverse()
 
     return ruta, visitados
-def visualizar_ruta(mapa, ruta, inicio, objetivo):
+def visualizar_ruta(matriz, ruta, inicio, objetivo):
 
-    # Verificar que exista una ruta
     if ruta is None:
         print("No existe una ruta para visualizar.")
         return
-
-    matriz = []
-
-    # Convertir mapa a 0 y 1
-    for fila in mapa:
-        nueva_fila = []
-
-        for celda in fila:
-
-            if celda == ".":
-                nueva_fila.append(1)   # transitable
-            else:
-                nueva_fila.append(0)   # obstáculo
-
-        matriz.append(nueva_fila)
 
     colores = ListedColormap(["black", "lightgray"])
 
     fig, ax = plt.subplots(figsize=(10, 10))
 
-    # Mostrar mapa
     ax.imshow(
         matriz,
         cmap=colores,
@@ -258,7 +249,6 @@ def visualizar_ruta(mapa, ruta, inicio, objetivo):
         origin="upper"
     )
 
-    # Separar las coordenadas de la ruta
     filas_ruta = []
     columnas_ruta = []
 
@@ -269,7 +259,6 @@ def visualizar_ruta(mapa, ruta, inicio, objetivo):
         filas_ruta.append(fila)
         columnas_ruta.append(columna)
 
-    # Dibujar ruta
     ax.plot(
         columnas_ruta,
         filas_ruta,
@@ -278,7 +267,6 @@ def visualizar_ruta(mapa, ruta, inicio, objetivo):
         label="Ruta BFS"
     )
 
-    # Dibujar inicio
     ax.scatter(
         inicio[1],
         inicio[0],
@@ -287,7 +275,6 @@ def visualizar_ruta(mapa, ruta, inicio, objetivo):
         label="Inicio"
     )
 
-    # Dibujar objetivo
     ax.scatter(
         objetivo[1],
         objetivo[0],
@@ -315,39 +302,74 @@ def visualizar_ruta(mapa, ruta, inicio, objetivo):
 # Programa principal
 # -------------------------
 
-mapa = leer_mapa("dataset/darkforest.map")
 
-print("Filas:", len(mapa))
-print("Columnas:", len(mapa[0]))
+# 1. Leer archivo original
+mapa_original = leer_mapa(
+    "dataset/darkforest.map"
+)
 
-# Visualización del mapa completo
+print("Filas:", len(mapa_original))
+print("Columnas:", len(mapa_original[0]))
 
-visualizar_mapa(mapa)
 
-grafo = crear_grafo(mapa)
+# 2. Convertir el mapa a matriz de navegación
+matriz = convertir_a_matriz(
+    mapa_original
+)
 
-print("Cantidad de nodos del grafo:", len(grafo))
-print("Cantidad de aristas:", contar_aristas(grafo))
 
-# Visualización de un subgrafo
+# 3. Visualizar matriz
+visualizar_mapa(
+    matriz
+)
+
+
+# 4. Convertir matriz a grafo
+grafo = crear_grafo(
+    matriz
+)
+
+print(
+    "Cantidad de nodos del grafo:",
+    len(grafo)
+)
+
+print(
+    "Cantidad de aristas:",
+    contar_aristas(grafo)
+)
+
+
+# 5. Visualizar subgrafo
 visualizar_subgrafo(
     grafo,
     fila_inicio=55,
     columna_inicio=90,
     tamano=20
 )
+
+
+# 6. Definir búsqueda
 inicio = (100, 200)
 objetivo = (420, 300)
 
-# Verificar que los puntos sean transitables
+
+# 7. Verificar posiciones
 if inicio not in grafo:
-    print("El punto inicial no es transitable.")
+
+    print(
+        "El punto inicial no es transitable."
+    )
 
 elif objetivo not in grafo:
-    print("El objetivo no es transitable.")
+
+    print(
+        "El objetivo no es transitable."
+    )
 
 else:
 
+    # 8. Ejecutar BFS
     ruta, visitados = bfs_busqueda(
         grafo,
         inicio,
@@ -357,15 +379,27 @@ else:
     if ruta is not None:
 
         print("Ruta encontrada.")
-        print("Cantidad de movimientos:", len(ruta) - 1)
-        print("Nodos explorados:", len(visitados))
 
+        print(
+            "Cantidad de movimientos:",
+            len(ruta) - 1
+        )
+
+        print(
+            "Nodos explorados:",
+            len(visitados)
+        )
+
+        # 9. Visualizar resultado
         visualizar_ruta(
-            mapa,
+            matriz,
             ruta,
             inicio,
             objetivo
         )
 
     else:
-        print("No existe una ruta entre los puntos.")
+
+        print(
+            "No existe una ruta entre los puntos."
+        )
