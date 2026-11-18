@@ -1,4 +1,0 @@
-# Entorno comprobado: Python 3.12. Pygame 2.6.1 puede no disponer de wheel para 3.14.
-pygame==2.6.1
-numpy>=1.26,<3
-matplotlib>=3.8,<4
