@@ -79,110 +79,10 @@ imagen_original = pygame.image.load(
 ancho_mapa = imagen_original.get_width()
 alto_mapa = imagen_original.get_height()
 
-print("MAPA CARGADO")
-print("Ancho:", ancho_mapa)
-print("Alto:", alto_mapa)
-
 
 # ============================================================
-# 3. CONVERTIR LA IMAGEN DEL MAPA EN UNA MATRIZ DE COLORES
+# 3. CREAR LA MATRIZ BINARIA DE TRANSITABILIDAD
 # ============================================================
-
-def convertir_a_matriz(imagen):
-    """
-    Convierte cada color RGB de la imagen en un identificador numerico.
-
-    Cada posicion de la matriz representa un pixel de la imagen.
-    Los colores iguales reciben el mismo identificador.
-    """
-
-    pixeles = pygame.surfarray.array3d(imagen)
-
-    # Pygame entrega los datos como (columnas, filas, canales).
-    # Los cambiamos a (filas, columnas, canales).
-    pixeles = np.transpose(pixeles, (1, 0, 2))
-
-    alto = pixeles.shape[0]
-    ancho = pixeles.shape[1]
-
-    pixeles_lista = pixeles.reshape(-1, 3)
-
-    colores_unicos, indices = np.unique(
-        pixeles_lista,
-        axis=0,
-        return_inverse=True
-    )
-
-    cantidad_colores = len(colores_unicos)
-
-    if cantidad_colores <= 256:
-        tipo = np.uint8
-    elif cantidad_colores <= 65536:
-        tipo = np.uint16
-    else:
-        tipo = np.uint32
-
-    matriz = indices.reshape(
-        alto,
-        ancho
-    ).astype(tipo)
-
-    return matriz, colores_unicos
-
-
-matriz, paleta = convertir_a_matriz(imagen_original)
-
-print("\nMATRIZ GENERADA")
-print("Filas:", matriz.shape[0])
-print("Columnas:", matriz.shape[1])
-print("Colores diferentes:", len(paleta))
-
-
-# ============================================================
-# 4. RECONSTRUIR LA IMAGEN A PARTIR DE LA MATRIZ
-# ============================================================
-
-def matriz_a_imagen(matriz, paleta):
-    """
-    Recupera el color RGB de cada identificador de la matriz.
-    """
-
-    imagen_rgb = paleta[matriz]
-
-    # Pygame necesita el orden (columnas, filas, canales).
-    imagen_rgb = np.transpose(
-        imagen_rgb,
-        (1, 0, 2)
-    )
-
-    superficie = pygame.surfarray.make_surface(imagen_rgb)
-
-    return superficie
-
-
-imagen_matriz = matriz_a_imagen(matriz, paleta)
-
-pixeles_originales = pygame.surfarray.array3d(imagen_original)
-pixeles_reconstruidos = pygame.surfarray.array3d(imagen_matriz)
-
-print(
-    "\n¿La reconstruccion conserva los colores?",
-    np.array_equal(
-        pixeles_originales,
-        pixeles_reconstruidos
-    )
-)
-
-
-# ============================================================
-# 5. CREAR LA MATRIZ BINARIA DE TRANSITABILIDAD
-# ============================================================
-
-if not RUTA_MASCARA.exists():
-    # El nombre del archivo puede variar (guiones bajos/espacios/acentos).
-    _candidatas = sorted(CARPETA.glob("Mapa_obst*.png"))
-    if _candidatas:
-        RUTA_MASCARA = _candidatas[0]
 
 if not RUTA_MASCARA.exists():
     raise FileNotFoundError(
@@ -329,9 +229,6 @@ cantidad_validas = int(np.count_nonzero(matriz_posiciones_validas))
 cantidad_validas_estatica = cantidad_validas
 cantidad_invalidas = int(matriz_posiciones_validas.size) - cantidad_validas
 porcentaje_validas = 100 * cantidad_validas / matriz_posiciones_validas.size
-print("POSICIONES VALIDAS DEL NPC:", matriz_posiciones_validas.shape)
-print("Validas:", cantidad_validas, "Invalidas:", cantidad_invalidas)
-print(f"Porcentaje valido: {porcentaje_validas:.2f}%")
 colores_posiciones = np.empty((*matriz_posiciones_validas.shape,3), dtype=np.uint8)
 colores_posiciones[:] = (220,55,55)
 colores_posiciones[matriz_posiciones_validas == 1] = (35,190,85)
@@ -343,7 +240,6 @@ cantidad_obstaculos = int(np.count_nonzero(matriz_transitabilidad == 0))
 total_celdas = int(matriz_transitabilidad.size)
 
 porcentaje_transitable = cantidad_transitable * 100 / total_celdas
-porcentaje_obstaculos = cantidad_obstaculos * 100 / total_celdas
 
 # Creamos una imagen de previsualización:
 # verde = 1 (transitable), rojo = 0 (obstáculo).
@@ -363,57 +259,8 @@ imagen_transitabilidad = pygame.surfarray.make_surface(
     imagen_binaria_rgb
 )
 
-# Guardamos la matriz para utilizarla posteriormente con los algoritmos.
-np.save(
-    CARPETA_DATOS / "matriz_transitabilidad.npy",
-    matriz_transitabilidad
-)
-
-# También guardamos una versión CSV para poder inspeccionar sus 0 y 1.
-np.savetxt(
-    CARPETA_DATOS / "matriz_transitabilidad.csv",
-    matriz_transitabilidad,
-    delimiter=",",
-    fmt="%d"
-)
-
-# Guardamos la previsualización de colores.
-pygame.image.save(
-    imagen_transitabilidad,
-    str(CARPETA_DATOS / "vista_matriz_transitabilidad.png")
-)
-
-print("\nMATRIZ BINARIA DE TRANSITABILIDAD")
-print("Filas:", matriz_transitabilidad.shape[0])
-print("Columnas:", matriz_transitabilidad.shape[1])
-print(
-    f"Transitable (1): {cantidad_transitable:,} "
-    f"({porcentaje_transitable:.2f}%)"
-)
-print(
-    f"Obstaculos (0): {cantidad_obstaculos:,} "
-    f"({porcentaje_obstaculos:.2f}%)"
-)
-print("Matriz guardada en matriz_transitabilidad.npy")
-print("CSV guardado en matriz_transitabilidad.csv")
-print("Vista guardada en vista_matriz_transitabilidad.png")
-
-
 # ============================================================
-# 6. GUARDAR LA MATRIZ Y SU PALETA
-# ============================================================
-
-np.savez_compressed(
-    CARPETA_DATOS / "matriz_colores.npz",
-    matriz=matriz,
-    paleta=paleta
-)
-
-print("Matriz guardada en matriz_colores.npz")
-
-
-# ============================================================
-# 7. CARGAR Y DIVIDIR EL SPRITE DEL AVENTURERO
+# 4. CARGAR Y DIVIDIR EL SPRITE DEL AVENTURERO
 # ============================================================
 
 if not RUTA_SPRITE.exists():
@@ -450,21 +297,6 @@ if ancho_frame_original != ANCHO_NPC or alto_frame_original != ALTO_NPC:
         f"Cada cuadro deberia medir {ANCHO_NPC}x{ALTO_NPC}, "
         f"pero mide {ancho_frame_original}x{alto_frame_original}."
     )
-
-print("\nSPRITE CARGADO")
-print(
-    "Tamano de la hoja:",
-    hoja_sprites.get_width(),
-    "x",
-    hoja_sprites.get_height()
-)
-print(
-    "Tamano original de cada cuadro:",
-    ancho_frame_original,
-    "x",
-    alto_frame_original
-)
-print("Distribucion: 4 columnas x 5 filas = 20 cuadros")
 
 # Distribución confirmada del spritesheet:
 # Fila 0: caminar hacia abajo (frente).
@@ -515,27 +347,21 @@ for columna in range(COLUMNAS_SPRITE):
     sprites_idle.append(frame)
 
 # ============================================================
-# 8. CONFIGURAR LA VISUALIZACION DEL MAPA
+# 5. CONFIGURAR LA VISUALIZACION DEL MAPA
 # ============================================================
 
-# Modos normales:
+# Modos de vista:
 # 0 = Imagen original.
-# 1 = Imagen reconstruida desde la matriz de colores.
-# 2 = Matriz de colores con cuadrícula.
-# 3 = Matriz binaria de transitabilidad (G activa/desactiva este modo).
+# 3 = Matriz binaria de transitabilidad (G o 4 activan/desactivan este modo).
 
 modo = 0
 modo_anterior_binario = 0
 mostrar_posiciones_validas = False
 
-nombres_vista = [
-    "Imagen original",
-    "Matriz de colores",
-    "Matriz con cuadricula",
-    "Matriz binaria de transitabilidad"
-]
-
-mostrar_rejilla = False
+nombres_vista = {
+    0: "Imagen original",
+    3: "Matriz binaria de transitabilidad"
+}
 
 zoom_minimo = min(
     (ANCHO - 40) / ancho_mapa,
@@ -559,7 +385,7 @@ desplazamiento_y = (
 
 
 # ============================================================
-# 9. CONFIGURAR LA POSICION Y ANIMACION DEL NPC
+# 6. CONFIGURAR LA POSICION Y ANIMACION DEL NPC
 # ============================================================
 
 # La posicion del NPC se guarda en coordenadas del mapa,
@@ -589,7 +415,7 @@ mostrar_hitbox_pies = True
 
 
 # ============================================================
-# 10. ACTUALIZAR LA VISTA DEL MAPA
+# 7. ACTUALIZAR LA VISTA DEL MAPA
 # ============================================================
 
 def actualizar_vista():
@@ -597,12 +423,10 @@ def actualizar_vista():
 
     if mostrar_posiciones_validas:
         superficie = imagen_posiciones_validas
-    elif modo == 0:
-        superficie = imagen_original
     elif modo == 3:
         superficie = imagen_transitabilidad
     else:
-        superficie = imagen_matriz
+        superficie = imagen_original
 
     nuevo_ancho = max(
         1,
@@ -643,95 +467,7 @@ actualizar_vista()
 
 
 # ============================================================
-# 11. DIBUJAR LA CUADRICULA
-# ============================================================
-
-def dibujar_cuadricula():
-
-    if modo != 2 and not mostrar_rejilla:
-        return
-
-    # Evitar una cuadrícula demasiado densa cuando el mapa
-    # está alejado.
-    if zoom < 2:
-        return
-
-    if zoom >= 3:
-        paso = 1
-    else:
-        paso = 4
-
-    columna_inicio = max(
-        0,
-        int(-desplazamiento_x / zoom)
-    )
-
-    columna_final = min(
-        ancho_mapa,
-        int((ANCHO - desplazamiento_x) / zoom) + 1
-    )
-
-    fila_inicio = max(
-        0,
-        int(-desplazamiento_y / zoom)
-    )
-
-    fila_final = min(
-        alto_mapa,
-        int((ALTO - PANEL - desplazamiento_y) / zoom) + 1
-    )
-
-    y1 = max(0, int(desplazamiento_y))
-    y2 = min(
-        ALTO - PANEL,
-        int(desplazamiento_y + alto_mapa * zoom)
-    )
-
-    x1 = max(0, int(desplazamiento_x))
-    x2 = min(
-        ANCHO,
-        int(desplazamiento_x + ancho_mapa * zoom)
-    )
-
-    for columna in range(
-        (columna_inicio // paso) * paso,
-        columna_final + 1,
-        paso
-    ):
-
-        x = int(
-            desplazamiento_x + columna * zoom
-        )
-
-        pygame.draw.line(
-            pantalla,
-            (20, 20, 20),
-            (x, y1),
-            (x, y2),
-            1
-        )
-
-    for fila in range(
-        (fila_inicio // paso) * paso,
-        fila_final + 1,
-        paso
-    ):
-
-        y = int(
-            desplazamiento_y + fila * zoom
-        )
-
-        pygame.draw.line(
-            pantalla,
-            (20, 20, 20),
-            (x1, y),
-            (x2, y),
-            1
-        )
-
-
-# ============================================================
-# 12. ACTUALIZAR EL MOVIMIENTO DEL NPC
+# 8. ACTUALIZAR EL MOVIMIENTO DEL NPC
 # ============================================================
 
 # Seguimiento visual sobre los desplazamientos existentes, sin otra camara.
@@ -850,7 +586,7 @@ def actualizar_npc(dt):
 
 
 # ============================================================
-# 13. DIBUJAR EL NPC Y EL RECTANGULO DE SUS PIES
+# 9. DIBUJAR EL NPC Y EL RECTANGULO DE SUS PIES
 # ============================================================
 
 def dibujar_npc():
@@ -1327,15 +1063,13 @@ def abrir_subgrafo():
 
 
 # ============================================================
-# 16. OBSTACULOS DINAMICOS, REPLANIFICACION, COMPARACION E INFORME
+# 10. OBSTACULOS DINAMICOS, REPLANIFICACION, COMPARACION E INFORME
 # ============================================================
 # Flujo en vivo: aparece un obstaculo -> se actualiza la matriz efectiva solo
 # en su ventana -> se comprueba (vectorizado) si bloquea el tramo pendiente de
 # la ruta -> si lo bloquea, se pausa el NPC y se vuelve a ejecutar el mismo
 # algoritmo desde la posicion actual hacia el destino original.
 
-MIN_ADELANTE = 40        # Nodos minimos por delante del NPC al aparecer.
-ALCANCE_RUTA = 140       # Maximo de nodos por delante (para que sea visible).
 DURACION_EFECTO = 0.8    # Segundos del destello de aparicion.
 
 
@@ -2058,10 +1792,11 @@ def dibujar_panel():
          f"obstaculos {ses['t_preparacion'] * 1000:.2f} ms | Animacion: {ses['t_animacion']:.1f} s | Pasos: {ses['pasos']}"),
         ("Camara siguiendo al NPC (zoom fijo) | Ruta: amarilla | Descartada: naranja | Rastro: rojo" if seguimiento_camara else
          "Clic: inicio/destino | Arrastrar: camara | Rueda: zoom | Ruta: amarilla | Descartada: naranja | Rastro: rojo"),
-        "TAB/1-3: vistas | G/4: binaria | V: validas | J: rejilla | H: hitbox | R: centrar | O: obstaculo | P: auto | X: limpiar | B: zonas | N: semilla | C: comparar | I: informe",
+        "1: original | G/4: binaria | V: validas | H: hitbox | R: centrar | O: obstaculo | P: auto | X: limpiar | B: zonas | N: semilla | C: comparar | I: informe",
         f"Vista: {vista} | NPC: 32x48 | Hitbox: 15x7 | Inicio: {inicio_busqueda} | Destino: {destino_busqueda}",
-        (f"Matriz: {ancho_mapa}x{alto_mapa} | Validas (efectiva): {cantidad_validas:,} ({porcentaje_validas:.2f}%) | "
-         f"Invalidas: {cantidad_invalidas:,} | Bloqueadas por dinamicos: {bloqueadas:,} | Obstaculos estaticos (px): {cantidad_obstaculos:,}"),
+        (f"Matriz: {ancho_mapa}x{alto_mapa} | Transitables (px): {cantidad_transitable:,} ({porcentaje_transitable:.2f}%) | "
+         f"Obstaculos (px): {cantidad_obstaculos:,} | Validas: {cantidad_validas:,} ({porcentaje_validas:.2f}%) | "
+         f"Invalidas: {cantidad_invalidas:,} | Bloq. dinamicos: {bloqueadas:,}"),
     ]
     for i, texto in enumerate(textos):
         pantalla.blit(fuente.render(texto, True, (225, 230, 235)), (15, y + 114 + i * 18))
@@ -2124,7 +1859,7 @@ hubo_arrastre = False
 
 
 # ============================================================
-# 14. BUCLE PRINCIPAL
+# 11. BUCLE PRINCIPAL
 # ============================================================
 
 reloj = pygame.time.Clock()
@@ -2171,27 +1906,8 @@ while ejecutando:
             if evento.key == pygame.K_ESCAPE:
                 ejecutando = False
 
-            elif evento.key == pygame.K_TAB:
-                # TAB recorre las tres vistas originales.
-                if modo == 3:
-                    modo = (modo_anterior_binario + 1) % 3
-                else:
-                    modo = (modo + 1) % 3
-                modo_anterior_binario = modo
-                actualizar_vista()
-
             elif evento.key == pygame.K_1:
                 modo = 0
-                modo_anterior_binario = modo
-                actualizar_vista()
-
-            elif evento.key == pygame.K_2:
-                modo = 1
-                modo_anterior_binario = modo
-                actualizar_vista()
-
-            elif evento.key == pygame.K_3:
-                modo = 2
                 modo_anterior_binario = modo
                 actualizar_vista()
 
@@ -2213,10 +1929,6 @@ while ejecutando:
                 # V conserva el modo anterior al activar/desactivar la vista.
                 mostrar_posiciones_validas = not mostrar_posiciones_validas
                 actualizar_vista()
-
-            elif evento.key == pygame.K_j:
-                # J activa/desactiva la cuadrícula de referencia.
-                mostrar_rejilla = not mostrar_rejilla
 
             elif evento.key == pygame.K_r and not seguimiento_camara:
                 centrar_mapa()
@@ -2338,9 +2050,6 @@ while ejecutando:
         )
     )
 
-    # Dibujar la cuadrícula si está activada.
-    dibujar_cuadricula()
-
     # El recorrido permanece sobre todas las vistas y debajo del NPC.
     dibujar_resultado()
     dibujar_rastro()
@@ -2349,7 +2058,7 @@ while ejecutando:
     dibujar_zonas_bloqueo()
     dibujar_obstaculos(False)
 
-    # Dibujar el aventurero encima del mapa y de la cuadrícula.
+    # Dibujar el aventurero encima del mapa.
     dibujar_npc()
     dibujar_obstaculos(True)
 
@@ -2367,7 +2076,7 @@ while ejecutando:
 
 
 # ============================================================
-# 15. CERRAR PYGAME
+# 12. CERRAR PYGAME
 # ============================================================
 
 pygame.quit()
