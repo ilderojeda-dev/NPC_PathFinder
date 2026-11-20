@@ -1,14 +1,14 @@
 import pygame
 import numpy as np
 from pathlib import Path
-from collections import deque
-from heapq import heappush, heappop
-from time import perf_counter
+from time import perf_counter, time_ns
 import math
 import csv
+import interfaz_pygame as ui
+from algoritmos_busqueda import MotorPathfinding, ALGORITMOS_DISPONIBLES
 
 from obstaculos_dinamicos import (
-    GestorObstaculosDinamicos, TAMANOS, MODOS, MODO_RUTA
+    GestorObstaculosDinamicos, TAMANOS
 )
 
 
@@ -26,7 +26,7 @@ RUTA_MASCARA = CARPETA / "Recursos" / "mascara_obstaculos.png"
 
 ANCHO = 1200
 ALTO = 900
-PANEL = 290   # Mas alto para alojar los controles de obstaculos dinamicos
+PANEL = 220   # Barra de acciones y tarjetas; el resto es viewport del mapa
 
 # Tamaño al que se mostrará cada cuadro del aventurero.
 ANCHO_NPC = 32
@@ -63,9 +63,9 @@ ZOOM_SEGUIMIENTO = 2.0
 pygame.init()
 
 pantalla = pygame.display.set_mode((ANCHO, ALTO))
-pygame.display.set_caption("Prueba de mapa y animacion del aventurero")
+pygame.display.set_caption("NPC PathFinder | Forest Navigation")
 
-fuente = pygame.font.SysFont("Arial", 14)
+fuente = ui.font(14)
 
 if not RUTA_IMAGEN.exists():
     raise FileNotFoundError(
@@ -222,9 +222,13 @@ SEMILLA_INICIAL = 2024
 gestor_obstaculos = GestorObstaculosDinamicos(
     matriz_transitabilidad, matriz_posiciones_validas_estatica,
     ANCHO_HITBOX_PIES, ALTO_HITBOX_PIES, SEMILLA_INICIAL)
-# La efectiva conserva el nombre original: BFS, A*, colisiones, clics y el
+# La efectiva es consultada por las busquedas, colisiones, clics y el
 # visualizador de subgrafos la consultan sin cambios.
 matriz_posiciones_validas = gestor_obstaculos.efectiva
+motor_pathfinding = MotorPathfinding(matriz_posiciones_validas_estatica, matriz_posiciones_validas)
+preparacion_alt = motor_pathfinding.preparar_alt()
+# Alias: la implementacion unica de los tres algoritmos vive en el modulo.
+buscar_ruta = motor_pathfinding.buscar_ruta
 cantidad_validas = int(np.count_nonzero(matriz_posiciones_validas))
 cantidad_validas_estatica = cantidad_validas
 cantidad_invalidas = int(matriz_posiciones_validas.size) - cantidad_validas
@@ -538,6 +542,7 @@ def actualizar_npc(dt):
     global animando, indice_ruta, acumulado_ruta, moviendo_npc
     global direccion_npc, indice_frame_npc, tiempo_animacion_npc, mensaje
     global pasos_desde_obstaculo
+    actualizar_reloj_recorrido()
     caminaba = moviendo_npc
     moviendo_npc = False
     # Durante una replanificacion el NPC queda quieto (animacion idle).
@@ -555,25 +560,28 @@ def actualizar_npc(dt):
             if abs(dx) + abs(dy) != 1 or not es_posicion_valida(nx, ny):
                 animando = False
                 mensaje = "Recorrido detenido: paso no valido."
-                sesion["resultado"] = "Interrumpido: paso no valido"
+                cerrar_recorrido("Interrumpido: paso no valido")
                 break
             mover_npc_con_colisiones(dx, dy, 1)
             if centro_hitbox() != (nx, ny):
                 animando = False
                 mensaje = "Recorrido detenido por colision."
-                sesion["resultado"] = "Interrumpido: colision"
+                cerrar_recorrido("Interrumpido: colision")
                 break
             direccion_npc = ("derecha" if dx > 0 else "izquierda" if dx < 0
                              else "abajo" if dy > 0 else "arriba")
             indice_ruta += 1
             acumulado_ruta -= 1
             sesion["pasos"] += 1
+            sesion["rutas"][-1]["realizados"] += 1
             pasos_desde_obstaculo += 1
         if indice_ruta == len(ruta_encontrada) - 1:
             animando = False
             mensaje = "Destino alcanzado."
-            sesion["resultado"] = "Destino alcanzado"
+            cerrar_recorrido("Destino alcanzado")
+            sesion["rutas"][-1]["completada"] = True
             sesion["longitud_final"] = sesion["pasos"]
+        actualizar_reloj_recorrido()
         moviendo_npc = animando
     if caminaba != moviendo_npc:
         indice_frame_npc = 0
@@ -660,98 +668,18 @@ def dibujar_hitbox_pies():
     )
 
 
-# Integracion de BFS/A*: misma cola, relajacion y reconstruccion del
-# modulo logica_pathfinding.py, consultando el grafo implicito existente.
-def heuristica_manhattan(nodo, objetivo):
-    return abs(nodo[0] - objetivo[0]) + abs(nodo[1] - objetivo[1])
-
-
-def buscar_ruta(inicio, objetivo, algoritmo, lote=LOTE_EXPANSIONES):
-    """Generador para mantener la ventana activa durante la busqueda.
-
-    Descubiertos: nodos insertados por primera vez (incluye inicio).
-    Expandidos: nodos cuyos vecinos se consultan (excluye objetivo).
-    Tiempo: preparacion, busqueda y reconstruccion; excluye dibujo/esperas.
-    Arrays compactos guardan predecesores/costes, nunca aristas del grafo.
-    """
-    reloj_busqueda = perf_counter()
-    tiempo = 0.0
-    if not es_posicion_valida(*inicio) or not es_posicion_valida(*objetivo):
-        return dict(ruta=None, descubiertos=0, expandidos=0,
-                    tiempo=perf_counter()-reloj_busqueda, estado="Puntos invalidos")
-    alto, ancho = matriz_posiciones_validas.shape
-    total = alto * ancho
-    anterior = np.full(total, -1, dtype=np.int32)
-    origen = inicio[1] * ancho + inicio[0]
-    meta = objetivo[1] * ancho + objetivo[0]
-    anterior[origen] = origen
-    es_astar = algoritmo == "A*"
-    costos = np.full(total, -1, dtype=np.int32) if es_astar else None
-    if es_astar:
-        costos[origen] = 0
-        pendientes = [(heuristica_manhattan(inicio, objetivo), 0, origen)]
-    else:
-        pendientes = deque([origen])
-    descubiertos, expandidos, operaciones = 1, 0, 0
-    encontrado = False
-    while pendientes:
-        if es_astar:
-            _, costo_actual, actual = heappop(pendientes)
-            if costo_actual != costos[actual]:
-                continue
-        else:
-            actual = pendientes.popleft()
-        if actual == meta:
-            encontrado = True
-            break
-        expandidos += 1
-        y, x = divmod(actual, ancho)
-        for nx, ny in obtener_vecinos(x, y):
-            vecino = ny * ancho + nx
-            nuevo = anterior[vecino] == -1
-            if es_astar:
-                nuevo_costo = costo_actual + 1
-                if not nuevo and nuevo_costo >= costos[vecino]:
-                    continue
-                costos[vecino] = nuevo_costo
-                anterior[vecino] = actual
-                heappush(pendientes, (nuevo_costo + heuristica_manhattan((nx, ny), objetivo),
-                                      nuevo_costo, vecino))
-            elif nuevo:
-                anterior[vecino] = actual
-                pendientes.append(vecino)
-            else:
-                continue
-            if nuevo:
-                descubiertos += 1
-        operaciones += 1
-        if operaciones % lote == 0:
-            tiempo += perf_counter() - reloj_busqueda
-            yield dict(descubiertos=descubiertos, expandidos=expandidos,
-                       tiempo=tiempo, estado="Buscando")
-            reloj_busqueda = perf_counter()
-    ruta = None
-    if encontrado:
-        ruta = []
-        nodo = meta
-        while True:
-            y, x = divmod(nodo, ancho)
-            ruta.append((x, y))
-            if nodo == origen:
-                break
-            nodo = int(anterior[nodo])
-        ruta.reverse()
-    tiempo += perf_counter() - reloj_busqueda
-    return dict(ruta=ruta, descubiertos=descubiertos, expandidos=expandidos,
-                tiempo=tiempo, estado="Ruta encontrada" if encontrado else "Sin camino")
-
-
-def bfs_busqueda(inicio, objetivo, lote=LOTE_EXPANSIONES):
-    return buscar_ruta(inicio, objetivo, "BFS", lote)
-
-
-def astar_busqueda(inicio, objetivo, lote=LOTE_EXPANSIONES):
-    return buscar_ruta(inicio, objetivo, "A*", lote)
+# Preparacion compartida de landmarks, ejecutada por lotes.
+def avanzar_preparacion_alt():
+    global preparacion_alt, mensaje
+    if preparacion_alt is None:
+        return
+    try:
+        progreso = next(preparacion_alt)
+        mensaje = (f"Preparando mapa ALT: landmark {progreso['landmark']}/{progreso['cantidad']} "
+                   f"- {progreso['expandidos']:,} posiciones")
+    except StopIteration:
+        preparacion_alt = None
+        mensaje = "Mapa preparado. Selecciona inicio y destino, o ejecuta la busqueda."
 
 
 def mouse_a_nodo(pos):
@@ -782,6 +710,7 @@ def ubicar_en_inicio():
 
 
 def reiniciar_busqueda():
+    interrumpir_recorrido("Interrumpido por reinicio")
     detener_seguimiento()
     global inicio_busqueda, destino_busqueda, tarea_busqueda, ruta_encontrada
     global animando, mensaje, estadisticas, rastro_modificado, ruta_escalada
@@ -790,8 +719,10 @@ def reiniciar_busqueda():
     global pasos_desde_obstaculo
     if tarea_busqueda is not None:
         tarea_busqueda.close()
+        sesion["resultado"] = "Busqueda cancelada"
     if tarea_comparacion is not None:
         tarea_comparacion.close()
+        contexto_comparacion["estado"] = "Cancelada"
     tarea_comparacion, comparando = None, False
     pausa_replan, replan_actual = False, None
     limpiar_mundo_dinamico()
@@ -822,7 +753,7 @@ def seleccionar_punto(pos):
         mensaje = "Inicio seleccionado. Ahora selecciona el destino."
     elif destino_busqueda is None:
         destino_busqueda = nodo
-        mensaje = "Puntos listos. Ejecuta BFS o A*."
+        mensaje = "Puntos listos. Selecciona un algoritmo y ejecuta la busqueda."
     else:
         mensaje = "Pulsa Reiniciar para seleccionar otros puntos."
 
@@ -830,8 +761,9 @@ def seleccionar_punto(pos):
 def ejecutar_busqueda(algoritmo):
     global tarea_busqueda, animando, ruta_encontrada, estadisticas, mensaje, ruta_escalada
     global algoritmo_activo, sesion, ruta_inicial, ruta_np, pausa_replan, replan_actual
-    if inicio_busqueda is None or destino_busqueda is None or tarea_busqueda is not None or comparando:
+    if preparacion_alt is not None or inicio_busqueda is None or destino_busqueda is None or tarea_busqueda is not None or comparando:
         return
+    interrumpir_recorrido("Interrumpido por nueva busqueda")
     animando = False
     # Cada ejecucion parte del mapa limpio: mismas condiciones iniciales.
     limpiar_mundo_dinamico()
@@ -846,8 +778,7 @@ def ejecutar_busqueda(algoritmo):
     resultados_sesion[algoritmo] = sesion
     estadisticas = dict(algoritmo=algoritmo, descubiertos=0, expandidos=0,
                         tiempo=0.0, estado="Buscando")
-    tarea_busqueda = (bfs_busqueda if algoritmo == "BFS" else astar_busqueda)(
-        inicio_busqueda, destino_busqueda)
+    tarea_busqueda = buscar_ruta(inicio_busqueda, destino_busqueda, algoritmo)
     mensaje = "Buscando... puedes mover la camara o reiniciar."
 
 
@@ -873,6 +804,7 @@ def avanzar_busqueda():
             mensaje += ". Pulsa Animar recorrido."
         else:
             ruta_encontrada = None
+            registrar_inicial(sesion, estadisticas, None)
             sesion["resultado"] = "Sin camino"
         ruta_escalada = None
 
@@ -889,6 +821,11 @@ def animar_recorrido():
         seguimiento_camara = True
         encuadrando_npc = True
         progreso_visual = 0.0
+        sesion["reloj_inicio"] = sesion["reloj_ultimo"] = perf_counter()
+        sesion["resultado"] = "En recorrido"
+        if not animando:
+            sesion["rutas"][-1]["completada"] = True
+            cerrar_recorrido("Destino alcanzado")
         mensaje = "Recorriendo ruta..." if animando else "El inicio ya es el destino."
 
 
@@ -950,7 +887,8 @@ def crear_imagen_subgrafo(x, y, ancho, alto):
 
 
 class VisualizadorSubgrafo:
-    """Ventana secundaria. Cerrar esta ventana no llama a pygame.quit()."""
+    """Ventana secundaria. Cerrar esta ventana no llama a interrumpir_recorrido("Interrumpido al cerrar")
+pygame.quit()."""
     def __init__(self):
         self.ventana = pygame.Window("Configurar subgrafo", size=(700,430))
         self.campos = ["450", "400", "50", "50"]
@@ -983,29 +921,29 @@ class VisualizadorSubgrafo:
 
     def dibujar(self):
         superficie = self.ventana.get_surface()
-        superficie.fill((24,29,35))
+        superficie.fill(ui.BG)
         if self.imagen is None:
             textos = [("Region en coordenadas del mapa (x = columna, y = fila)",(20,20)),
                       ("Clic o TAB: campo | Escribir: valor | ENTER: visualizar | ESC: cerrar",(20,360)),
                       (self.error,(20,390))]
             for i,nombre in enumerate(("X inicial", "Y inicial", "Ancho", "Alto")):
-                superficie.blit(fuente.render(nombre,True,(230,230,230)),(130,75+i*55))
+                superficie.blit(fuente.render(nombre,True,ui.TEXT),(130,75+i*55))
                 rect = self.rects[i]
-                pygame.draw.rect(superficie,(50,60,70),rect)
-                pygame.draw.rect(superficie,(80,180,255) if i==self.activo else (100,110,120),rect,2)
+                pygame.draw.rect(superficie,ui.CARD,rect)
+                pygame.draw.rect(superficie,ui.ACCENT if i==self.activo else ui.BORDER,rect,2)
                 superficie.blit(fuente.render(self.campos[i],True,(255,255,255)),(rect.x+10,rect.y+9))
-            pygame.draw.rect(superficie,(45,105,145),self.confirmar,border_radius=4)
+            pygame.draw.rect(superficie,(55,88,64),self.confirmar,border_radius=4)
             superficie.blit(fuente.render("Visualizar",True,(255,255,255)),(320,310))
         else:
             x,y,w,h = self.region
-            pygame.draw.rect(superficie,(45,105,145),self.volver,border_radius=4)
+            pygame.draw.rect(superficie,(55,88,64),self.volver,border_radius=4)
             superficie.blit(fuente.render("Cambiar region",True,(255,255,255)),(30,23))
             textos = [(f"Origen: ({x}, {y}) | Region: {w} x {h} | Nodos: {self.nodos:,} | Aristas: {self.aristas:,}",(15,60)),
                       ("Azul: nodos validos | Rojo: conexiones internas | Fondo: mapa original",(15,82)),
                       ("Coordenadas: X crece a la derecha; Y hacia abajo. ESC cierra solo esta ventana.",(15,815))]
             superficie.blit(self.presentacion,((960-self.presentacion.get_width())//2,105))
         for texto,pos in textos:
-            superficie.blit(fuente.render(texto,True,(230,230,230)),pos)
+            superficie.blit(fuente.render(texto,True,ui.TEXT),pos)
         self.ventana.flip()
 
     def evento(self, evento):
@@ -1074,12 +1012,53 @@ DURACION_EFECTO = 0.8    # Segundos del destello de aparicion.
 
 
 def nueva_sesion(algoritmo, origen="Animacion en vivo"):
-    return dict(algoritmo=algoritmo, origen=origen, semilla=cfg_semilla,
+    ses = dict(id=len(historial_sesiones)+1, inicio=inicio_busqueda, destino=destino_busqueda,
+                rutas=[], tipos={"roca": 0, "arbusto": 0, "tronco": 0},
+                reloj_inicio=None, reloj_ultimo=None, reloj_fin=None,
+                t_total=0.0, t_movimiento=0.0, t_detenido=0.0,
+                algoritmo=algoritmo, origen=origen, semilla=cfg_semilla,
                 inicial=None, obstaculos=0, sin_efecto=0, omitidos=0,
                 retirados=0, replans=0, replans_ok=0, replans_fallidas=0,
                 t_busqueda=0.0, t_replan=0.0, descubiertos=0, expandidos=0,
                 t_preparacion=0.0, t_animacion=0.0, pasos=0,
                 longitud_final=None, resultado="--", log=[])
+    if algoritmo is not None:
+        historial_sesiones.append(ses)
+    return ses
+
+
+def registrar_ruta(ses, longitud, tiempo_busqueda):
+    # El NPC ya ocupa el primer nodo de cada ruta cuando se registra.
+    ses["rutas"].append(dict(longitud=longitud, nodos_totales=longitud + 1,
+                             realizados=0, completada=False,
+                             tiempo_busqueda=tiempo_busqueda))
+
+
+def nodos_recorridos_ruta(ruta):
+    return ruta["realizados"] + 1
+
+
+def actualizar_reloj_recorrido():
+    if sesion["reloj_inicio"] is None or sesion["reloj_fin"] is not None:
+        return
+    ahora = perf_counter()
+    intervalo = max(0.0, ahora - sesion["reloj_ultimo"])
+    sesion["reloj_ultimo"] = ahora
+    clave = "t_movimiento" if moviendo_npc and not pausa_replan and not encuadrando_npc else "t_detenido"
+    sesion[clave] += intervalo
+    sesion["t_total"] = ahora - sesion["reloj_inicio"]
+
+
+def cerrar_recorrido(resultado):
+    actualizar_reloj_recorrido()
+    if sesion["reloj_inicio"] is not None and sesion["reloj_fin"] is None:
+        sesion["reloj_fin"] = sesion["reloj_ultimo"]
+    sesion["resultado"] = resultado
+
+
+def interrumpir_recorrido(motivo):
+    if sesion["reloj_inicio"] is not None and sesion["reloj_fin"] is None:
+        cerrar_recorrido(motivo)
 
 
 def registrar_inicial(ses, res, longitud):
@@ -1089,6 +1068,9 @@ def registrar_inicial(ses, res, longitud):
     ses["descubiertos"] = res["descubiertos"]
     ses["expandidos"] = res["expandidos"]
     ses["longitud_final"] = longitud
+    ses["resultado"] = res.get("estado", "Ruta encontrada")
+    if longitud is not None:
+        registrar_ruta(ses, longitud, res["tiempo"])
 
 
 def acumular_replan(ses, res, exito):
@@ -1158,16 +1140,14 @@ def restaurar_escenario_inicial():
     if ruta_inicial is not None:
         instalar_ruta(list(ruta_inicial))
     ini = sesion.get("inicial")
-    nueva = nueva_sesion(algoritmo_activo)
-    if ini:
-        nueva["inicial"] = ini
-        nueva["t_busqueda"] = ini["tiempo"]
-        nueva["descubiertos"] = ini["descubiertos"]
-        nueva["expandidos"] = ini["expandidos"]
-        nueva["longitud_final"] = ini["longitud"]
-    sesion = nueva
+    if sesion["reloj_inicio"] is not None:
+        nueva = nueva_sesion(algoritmo_activo)
+        if ini:
+            registrar_inicial(nueva, dict(ini, estado="Ruta encontrada"), ini["longitud"])
+        sesion = nueva
     resultados_sesion[algoritmo_activo] = sesion
     gestor_obstaculos.rng.seed(cfg_semilla)
+
 
 
 def generar_obstaculo():
@@ -1180,7 +1160,7 @@ def generar_obstaculo():
     t0 = perf_counter()
     npc = centro_hitbox()
     obs = gestor_obstaculos.proponer(
-        cfg_modo, cfg_tamano, ruta_encontrada, indice_ruta, npc,
+        cfg_tamano, ruta_encontrada, indice_ruta, npc,
         destino_busqueda, rango=(cfg_radio_deteccion + 25, cfg_radio_deteccion + 55))
     if obs is None:
         mensaje = "No hay un lugar valido para un obstaculo en este momento."
@@ -1190,6 +1170,7 @@ def generar_obstaculo():
     registrar_cambio_mapa(info)
     efectos_aparicion.append(dict(obs=obs, t=0.0))
     sesion["obstaculos"] += 1
+    sesion["tipos"][obs.tipo] += 1
     pasos_desde_obstaculo = 0
     bloqueado = gestor_obstaculos.ruta_bloqueada(ruta_np, indice_ruta)
     sesion["t_preparacion"] += perf_counter() - t0
@@ -1247,6 +1228,7 @@ def iniciar_replanificacion(obstaculo, indice_bloqueo):
         bloqueado_en=indice_bloqueo,
         restante_anterior=len(ruta_encontrada) - 1 - indice_ruta,
         ruta_vieja=list(ruta_encontrada[indice_ruta:]))
+    actualizar_reloj_recorrido()
     pausa_replan = True
     moviendo_npc = False
     estadisticas.update(algoritmo=algoritmo_activo, descubiertos=0,
@@ -1260,6 +1242,7 @@ def iniciar_replanificacion(obstaculo, indice_bloqueo):
 def finalizar_replanificacion(resultado):
     global replan_actual, pausa_replan, animando, mensaje, indice_ruta
     global progreso_visual, descartada_escalada
+    actualizar_reloj_recorrido()
     info = replan_actual
     replan_actual = None
     ruta = resultado.pop("ruta")
@@ -1279,6 +1262,7 @@ def finalizar_replanificacion(resultado):
             if nodo not in nueva:
                 capa_descartada.set_at(nodo, (255, 110, 20, 235))
         descartada_escalada = None
+        registrar_ruta(sesion, len(ruta) - 1, resultado["tiempo"])
         instalar_ruta(ruta)
         indice_ruta = 0
         progreso_visual = 0.0
@@ -1294,7 +1278,7 @@ def finalizar_replanificacion(resultado):
                    "continua por la ruta anterior.")
     else:
         animando = False
-        sesion["resultado"] = "Sin ruta posible: recorrido detenido"
+        cerrar_recorrido("Sin ruta posible: recorrido detenido")
         entrada["resultado"] = "Sin ruta: recorrido detenido"
         mensaje = "Sin ruta posible hasta el destino. Recorrido detenido."
     sesion["log"].append(entrada)
@@ -1372,7 +1356,7 @@ def dibujar_efectos():
         pygame.draw.rect(pantalla, color, r, 2, border_radius=8)
 
 
-# ------------------ comparacion justa BFS vs A* ------------------
+# ------------------ comparacion de los tres algoritmos ------------------
 
 def _buscar_progreso(inicio, objetivo, alg, texto):
     gen = buscar_ruta(inicio, objetivo, alg, LOTE_EXPANSIONES)
@@ -1384,104 +1368,24 @@ def _buscar_progreso(inicio, objetivo, alg, texto):
         yield f"{texto} - {p['expandidos']:,} nodos expandidos"
 
 
-def _simular_algoritmo(alg, inicial, guion, destino, cfg):
-    """Camina virtualmente por la ruta aplicando el MISMO guion de obstaculos
-    (mismos obstaculos, mismos pasos de disparo). No dibuja ni espera."""
-    limpiar_mundo_dinamico()
-    ses = nueva_sesion(alg, "Comparacion justa (simulada)")
-    ses["semilla"] = cfg["semilla"]
-    ruta = inicial["ruta"]
-    registrar_inicial(ses, inicial, len(ruta) - 1)
-    idx, pasos, resultado = 0, 0, "Destino alcanzado"
-    for ev in guion:
-        avance = ev.paso - pasos
-        if avance > 0:
-            if idx + avance >= len(ruta) - 1:
-                break                      # llega antes de que aparezca
-            idx += avance
-            pasos += avance
-        pos = ruta[idx]
-        obs = gestor_obstaculos.instanciar_evento(ev)
-        t0 = perf_counter()
-        if not gestor_obstaculos.candidato_valido(*obs.huella, npc=pos, destino=destino):
-            ses["omitidos"] += 1
-            ses["log"].append(dict(evento="omitido", paso=pasos, posicion=pos,
-                                   obstaculo=obs.descripcion(),
-                                   resultado="Omitido: demasiado cerca del NPC"))
-            continue
-        registrar_cambio_mapa(gestor_obstaculos.colocar(obs), rescalar=False)
-        obs.paso = pasos
-        ses["obstaculos"] += 1
-        bloqueado = gestor_obstaculos.ruta_bloqueada(
-            np.array(ruta, dtype=np.intp).reshape(-1, 2), idx)
-        ses["t_preparacion"] += perf_counter() - t0
-        if bloqueado is None:
-            ses["sin_efecto"] += 1
-            ses["log"].append(dict(evento="sin_efecto", paso=pasos, posicion=pos,
-                                   obstaculo=obs.descripcion(),
-                                   resultado="Sin efecto: no se recalcula"))
-            continue
-        avance_det = max(0, (bloqueado - idx) - cfg["radio"])
-        idx += avance_det
-        pasos += avance_det
-        pos = ruta[idx]
-        res = yield from _buscar_progreso(
-            pos, destino, alg,
-            f"Comparando {alg}: replanificacion {ses['replans'] + 1}")
-        nueva = res.pop("ruta")
-        acumular_replan(ses, res, nueva is not None)
-        entrada = dict(evento="replan", num=ses["replans"], paso=pasos,
-                       posicion=pos, obstaculo=obs.descripcion(),
-                       tiempo=res["tiempo"], descubiertos=res["descubiertos"],
-                       expandidos=res["expandidos"],
-                       restante_anterior=len(ruta) - 1 - idx,
-                       longitud_nueva=(len(nueva) - 1) if nueva else None,
-                       resultado="Ruta encontrada")
-        if nueva is not None:
-            ruta, idx = nueva, 0
-        elif cfg["politica"] == "retirar":
-            registrar_cambio_mapa(gestor_obstaculos.retirar(obs), rescalar=False)
-            ses["retirados"] += 1
-            entrada["resultado"] = "Sin ruta: obstaculo retirado"
-        else:
-            entrada["resultado"] = "Sin ruta: recorrido detenido"
-            resultado = "Sin ruta posible: recorrido detenido"
-            ses["log"].append(entrada)
-            break
-        ses["log"].append(entrada)
-    if resultado == "Destino alcanzado":
-        pasos += len(ruta) - 1 - idx
-    ses["pasos"], ses["longitud_final"] = pasos, pasos
-    ses["resultado"] = resultado
-    ses["t_animacion"] = None            # simulado: no hay animacion
-    return ses
-
-
-def generador_comparacion(inicio, destino, cfg):
-    gestor_obstaculos.rng.seed(cfg["semilla"])
-    iniciales = {}
-    for alg in ("BFS", "A*"):
-        res = yield from _buscar_progreso(
-            inicio, destino, alg, f"Comparando: busqueda inicial {alg}")
-        if res["ruta"] is None:
-            return f"Comparacion cancelada: {alg} no encuentra ruta inicial."
-        iniciales[alg] = res
-    guion = gestor_obstaculos.crear_guion(
-        [iniciales["BFS"]["ruta"], iniciales["A*"]["ruta"]],
-        cfg["cantidad"], cfg["tamano"], destino)
-    for alg in ("BFS", "A*"):
-        resultados_sesion[alg] = yield from _simular_algoritmo(
-            alg, iniciales[alg], guion, destino, cfg)
-    limpiar_mundo_dinamico()
-    return (f"Comparacion lista: {len(guion)} obstaculos identicos para "
-            "ambos algoritmos. Revisa el informe (I).")
+def generador_comparacion(inicio, destino):
+    for alg in ALGORITMOS_DISPONIBLES:
+        res = yield from _buscar_progreso(inicio, destino, alg, f"Comparando {alg}")
+        ruta = res["ruta"]
+        resultados_comparacion.append(dict(
+            algoritmo=alg, tiempo=res["tiempo"], expandidos=res["expandidos"],
+            nodos_ruta=None if ruta is None else len(ruta), estado=res["estado"],
+            criterio_nodos=res.get("criterio_nodos", "Descubiertos unicos / expandidos hacia el destino"),
+            preparacion_alt_s=motor_pathfinding.alt.tiempo if "ALT" in alg else 0.0))
+    return "Comparacion estatica terminada. Sin obstaculos dinamicos ni animacion."
 
 
 def iniciar_comparacion():
     global comparando, tarea_comparacion, animando, ruta_encontrada
-    global ruta_escalada, mensaje, pausa_replan, replan_actual
-    if inicio_busqueda is None or destino_busqueda is None or comparando or tarea_busqueda is not None:
+    global ruta_escalada, mensaje, pausa_replan, replan_actual, contexto_comparacion, numero_comparacion, resultados_comparacion
+    if preparacion_alt is not None or inicio_busqueda is None or destino_busqueda is None or comparando or tarea_busqueda is not None:
         return
+    interrumpir_recorrido("Interrumpido por comparacion")
     animando = pausa_replan = False
     replan_actual = None
     limpiar_mundo_dinamico()
@@ -1489,11 +1393,19 @@ def iniciar_comparacion():
     ruta_encontrada = None
     capa_ruta.fill((0, 0, 0, 0))
     ruta_escalada = None
+    resultados_comparacion = []  # Cada comparacion conserva su propia lista.
+    numero_comparacion += 1
+    contexto_comparacion = dict(id=numero_comparacion, inicio=inicio_busqueda, destino=destino_busqueda,
+                                estado="En curso", resultados=resultados_comparacion,
+                                preparacion_alt_s=motor_pathfinding.alt.tiempo)
+    historial_comparaciones.append(contexto_comparacion)
+    if informe_ventana is not None:
+        informe_ventana.indice_comparacion = len(historial_comparaciones) - 1
+        informe_ventana.comparacion = True
+        informe_ventana.aviso = ""
     comparando = True
-    cfg = dict(cantidad=cfg_maximo, tamano=cfg_tamano, semilla=cfg_semilla,
-               politica=cfg_sin_ruta, radio=cfg_radio_deteccion)
-    tarea_comparacion = generador_comparacion(inicio_busqueda, destino_busqueda, cfg)
-    mensaje = "Comparando BFS y A* con los mismos obstaculos..."
+    tarea_comparacion = generador_comparacion(inicio_busqueda, destino_busqueda)
+    mensaje = "Comparando busquedas sobre el mismo mapa estatico..."
 
 
 def avanzar_comparacion():
@@ -1504,132 +1416,173 @@ def avanzar_comparacion():
         mensaje = next(tarea_comparacion)
     except StopIteration as fin:
         tarea_comparacion, comparando = None, False
-        mensaje = fin.value or "Comparacion terminada."
-        abrir_informe()
+        contexto_comparacion["estado"] = "Terminada"
+        mensaje = fin.value
+        abrir_informe(comparacion=True)
 
 
-# ------------------ informe ------------------
+
 
 def ms(t):
     return "--" if t is None else f"{t * 1000:.1f} ms"
 
 
-def linea_log(e):
-    if e["evento"] == "replan":
-        nueva = "-" if e["longitud_nueva"] is None else e["longitud_nueva"]
-        return (f"#{e['num']} p{e['paso']} {e['obstaculo']} -> {e['resultado']} | "
-                f"{e['tiempo'] * 1000:.1f}ms d{e['descubiertos']:,} "
-                f"e{e['expandidos']:,} L{e['restante_anterior']}->{nueva}")
-    return f"p{e['paso']} {e['obstaculo']} -> {e['resultado']}"
-
-
-def filas_informe():
-    s = {a: resultados_sesion.get(a) for a in ("BFS", "A*")}
-
-    def col(f):
-        return [("--" if s[a] is None else f(s[a])) for a in ("BFS", "A*")]
-    ini = lambda q, f: (lambda x: "--" if x["inicial"] is None else f(x["inicial"]))(q)
-    return [
-        ("Origen de los datos", col(lambda x: x["origen"])),
-        ("Resultado", col(lambda x: x["resultado"])),
-        ("Semilla de obstaculos", col(lambda x: str(x["semilla"]))),
-        ("Busqueda inicial: tiempo", col(lambda x: ini(x, lambda i: ms(i["tiempo"])))),
-        ("  descubiertos / expandidos",
-         col(lambda x: ini(x, lambda i: f"{i['descubiertos']:,} / {i['expandidos']:,}"))),
-        ("  longitud de ruta (movimientos)", col(lambda x: ini(x, lambda i: str(i["longitud"])))),
-        ("Obstaculos dinamicos generados", col(lambda x: str(x["obstaculos"]))),
-        ("  sin efecto (no se recalculo)", col(lambda x: str(x["sin_efecto"]))),
-        ("  omitidos / retirados por bloqueo total",
-         col(lambda x: f"{x['omitidos']} / {x['retirados']}")),
-        ("Replanificaciones (total: ok / sin ruta)",
-         col(lambda x: f"{x['replans']} ({x['replans_ok']} / {x['replans_fallidas']})")),
-        ("Tiempo de replanificacion (suma)", col(lambda x: ms(x["t_replan"]))),
-        ("Tiempo acumulado de busqueda (inicial + replans)", col(lambda x: ms(x["t_busqueda"]))),
-        ("Nodos descubiertos (acumulado)", col(lambda x: f"{x['descubiertos']:,}")),
-        ("Nodos expandidos (acumulado)", col(lambda x: f"{x['expandidos']:,}")),
-        ("Preparacion del mapa por obstaculos", col(lambda x: ms(x["t_preparacion"]))),
-        ("Tiempo de animacion (NPC en movimiento)",
-         col(lambda x: "simulado" if x["t_animacion"] is None else f"{x['t_animacion']:.1f} s")),
-        ("Pasos recorridos / longitud final",
-         col(lambda x: f"{x['pasos']} / {x['longitud_final']}")),
+def filas_informe(ses):
+    if ses is None:
+        return [("Sin ejecuciones individuales", "")]
+    ini = ses["inicial"]
+    valor = lambda clave: "--" if ini is None else ini[clave]
+    filas = [
+        ("Ejecucion", str(ses["id"])), ("Algoritmo", ses["algoritmo"]),
+        ("Inicio / destino", f"{ses['inicio']} / {ses['destino']}"),
+        ("A. Busqueda inicial", ""),
+        ("Tiempo de busqueda inicial (s)", valor("tiempo")),
+        ("Nodos descubiertos", valor("descubiertos")),
+        ("Nodos expandidos", valor("expandidos")),
+        ("Longitud inicial (movimientos)", valor("longitud")),
+        ("B. Obstaculos dinamicos", ""),
+        ("Total generados", ses["obstaculos"]),
+        ("Rocas", ses["tipos"]["roca"]),
+        ("Arboles (arbustos del catalogo)", ses["tipos"]["arbusto"]),
+        ("Palos (troncos del catalogo)", ses["tipos"]["tronco"]),
+        ("C. Historial de rutas", ""),
     ]
+    if "ALT" in ses["algoritmo"]:
+        filas.insert(8, ("Preparacion ALT compartida (s, fuera de busqueda)", motor_pathfinding.alt.tiempo))
+    filas.append(("Ruta", ("Nodos recorridos / nodos totales", "Tiempo de busqueda")))
+    for i, ruta in enumerate(ses["rutas"]):
+        nombre = "Ruta inicial" if i == 0 else f"Ruta {i + 1}"
+        filas.append((nombre, (f"{nodos_recorridos_ruta(ruta)} / {ruta['nodos_totales']}",
+                               ruta['tiempo_busqueda'])))
+    filas += [
+        ("Cantidad total de rutas creadas", len(ses["rutas"])),
+        ("D. Recorrido completo", ""),
+        ("Tiempo total de recorrido (s, incluye pausas)", ses["t_total"]),
+        ("Tiempo en movimiento (s)", ses["t_movimiento"]),
+        ("Tiempo detenido (s)", ses["t_detenido"]),
+        ("Pasos recorridos", ses["pasos"]),
+        ("Resultado final / estado actual", ses["resultado"]),
+    ]
+    return filas
 
 
-def exportar_informe_csv():
-    resumen = CARPETA_DATOS / "informe_obstaculos_dinamicos_resumen.csv"
-    detalle = CARPETA_DATOS / "informe_obstaculos_dinamicos_replanificaciones.csv"
-    with open(resumen, "w", newline="", encoding="utf-8") as f:
+def exportar_informe_csv(ses=None, comparacion=False, registro_comparacion=None):
+    if comparacion:
+        registro = registro_comparacion if registro_comparacion is not None else contexto_comparacion
+        if not registro:
+            return "No hay una comparacion seleccionada"
+        ruta = CARPETA_DATOS / f"comparacion_busquedas_{IDENTIFICADOR_APERTURA}_{registro['id']}.csv"
+        with open(ruta, "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(["algoritmo", "tiempo_busqueda_s", "nodos_explorados",
+                        "nodos_ruta", "estado", "inicio", "destino", "criterio_nodos", "preparacion_alt_s"])
+            for r in registro['resultados']:
+                w.writerow([r["algoritmo"], r["tiempo"], r["expandidos"],
+                            r["nodos_ruta"], r["estado"], registro['inicio'], registro['destino'],
+                            r["criterio_nodos"], r["preparacion_alt_s"]])
+        return ruta.name
+    if ses is None:
+        return "No hay una ejecucion seleccionada"
+    ruta = CARPETA_DATOS / f"informe_individual_{IDENTIFICADOR_APERTURA}_{ses['id']}_{ses['algoritmo'].replace('*', 'star')}.csv"
+    with open(ruta, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
-        w.writerow(["metrica", "BFS", "A*"])
-        for nombre, vals in filas_informe():
-            w.writerow([nombre.strip(), *vals])
-        w.writerow(["preparacion matriz estatica (s)", f"{TIEMPO_PREPARACION_ESTATICA:.4f}", ""])
-    with open(detalle, "w", newline="", encoding="utf-8") as f:
-        w = csv.writer(f)
-        w.writerow(["algoritmo", "origen", "evento", "num", "paso", "posicion", "obstaculo",
-                    "resultado", "tiempo_s", "descubiertos", "expandidos",
-                    "ruta_restante_anterior", "longitud_nueva"])
-        for alg in ("BFS", "A*"):
-            ses = resultados_sesion.get(alg)
-            for e in (ses["log"] if ses else []):
-                w.writerow([alg, ses["origen"], e["evento"], e.get("num", ""), e["paso"],
-                            e["posicion"], e["obstaculo"], e["resultado"],
-                            f"{e.get('tiempo', 0):.6f}", e.get("descubiertos", ""),
-                            e.get("expandidos", ""), e.get("restante_anterior", ""),
-                            e.get("longitud_nueva", "")])
-    return resumen.name, detalle.name
+        w.writerow(["metrica", "valor", "tiempo_busqueda_s"])
+        for nombre, valor in filas_informe(ses):
+            if isinstance(valor, tuple):
+                nodos, tiempo = valor
+                w.writerow([nombre, nodos, f"{tiempo:.6f}" if isinstance(tiempo, float) else tiempo])
+            else:
+                w.writerow([nombre, valor, ""])
+    return ruta.name
 
 
 class VentanaInforme:
-    """Ventana secundaria con la tabla comparativa y el registro de replans."""
-
-    def __init__(self):
-        self.ventana = pygame.Window("Informe de obstaculos dinamicos - BFS vs A*",
-                                     size=(1120, 760))
+    """Informe individual seleccionable o comparacion estatica independiente."""
+    def __init__(self, comparacion=False):
+        self.ventana = pygame.Window("Informes NPC PathFinder", size=(1120, 760))
+        self.comparacion = comparacion
+        self.indice = max(0, len(historial_sesiones) - 1)
+        self.indice_comparacion = max(0, len(historial_comparaciones) - 1)
+        self.scroll = 0
         self.aviso = ""
         self.ultimo = pygame.time.get_ticks()
-        self.negrita = pygame.font.SysFont("Arial", 14, bold=True)
         self.dibujar()
 
-    def _texto(self, sup, txt, pos, color=(230, 230, 230), f=None, ancho=None):
-        f = f or fuente
-        if ancho:
-            while len(txt) > 4 and f.size(txt)[0] > ancho:
-                txt = txt[:-4] + "..."
-        sup.blit(f.render(txt, True, color), pos)
+    def comparacion_seleccionada(self):
+        return historial_comparaciones[self.indice_comparacion] if historial_comparaciones else None
+
+    def navegacion_habilitada(self, direccion):
+        historial = historial_comparaciones if self.comparacion else historial_sesiones
+        indice = self.indice_comparacion if self.comparacion else self.indice
+        return bool(historial) and 0 <= indice + direccion < len(historial)
+
+    def navegar(self, direccion):
+        if not self.navegacion_habilitada(direccion):
+            return
+        if self.comparacion:
+            self.indice_comparacion += direccion
+        else:
+            self.indice += direccion
+            self.scroll = 0
+        self.aviso = ""
 
     def dibujar(self):
-        sup = self.ventana.get_surface()
-        sup.fill((24, 29, 35))
-        self._texto(sup, "Informe de obstaculos dinamicos: BFS vs A*", (20, 12),
-                    (255, 255, 255), pygame.font.SysFont("Arial", 20, bold=True))
-        y = 48
-        for x, titulo in ((20, "Metrica"), (470, "BFS"), (800, "A*")):
-            self._texto(sup, titulo, (x, y), (120, 200, 255), self.negrita)
-        pygame.draw.line(sup, (90, 100, 110), (20, y + 20), (1100, y + 20))
-        y += 26
-        for i, (nombre, vals) in enumerate(filas_informe()):
-            if i % 2 == 0:
-                pygame.draw.rect(sup, (32, 38, 46), (15, y - 2, 1090, 21))
-            self._texto(sup, nombre, (20, y), ancho=440)
-            self._texto(sup, vals[0], (470, y), ancho=320)
-            self._texto(sup, vals[1], (800, y), ancho=300)
-            y += 21
-        self._texto(sup, f"Preparacion de la matriz estatica (una sola vez al iniciar): "
-                    f"{TIEMPO_PREPARACION_ESTATICA:.3f} s", (20, y + 4), (190, 190, 190))
-        y += 34
-        self._texto(sup, "Registro de replanificaciones (pN = paso del NPC, "
-                    "dN = descubiertos, eN = expandidos, L = ruta restante -> nueva)",
-                    (20, y), (120, 200, 255), self.negrita)
-        y += 24
-        for x, alg in ((20, "BFS"), (570, "A*")):
-            self._texto(sup, alg, (x, y), (255, 220, 120), self.negrita)
-            ses = resultados_sesion.get(alg)
-            log = ses["log"][-11:] if ses else []
-            for k, e in enumerate(log):
-                self._texto(sup, linea_log(e), (x, y + 20 + k * 18), ancho=525)
-        self._texto(sup, "S: exportar CSV | ESC: cerrar | Para una comparacion justa use "
-                    "'Comparar BFS vs A*'  " + self.aviso, (20, 735), (190, 190, 190))
+        sup=self.ventana.get_surface();sup.fill(ui.BG)
+        ui.text(sup,"Resultados",(26,18),size=27,bold=True)
+        ui.text(sup,"NPC PATHFINDER / ANALISIS",(26,55),ui.MUTED,11,True)
+        self.acciones_ui = {pygame.K_i: pygame.Rect(435,24,150,36),
+                            pygame.K_c: pygame.Rect(595,24,150,36),
+                            pygame.K_s: pygame.Rect(755,24,140,36),
+                            pygame.K_LEFT: pygame.Rect(915,24,80,36),
+                            pygame.K_RIGHT: pygame.Rect(1005,24,80,36)}
+        for key,rect in self.acciones_ui.items():
+            label={pygame.K_i:"Individual",pygame.K_c:"Comparacion",pygame.K_s:"Exportar CSV",
+                   pygame.K_LEFT:"Anterior",pygame.K_RIGHT:"Siguiente"}[key]
+            habilitado = (self.navegacion_habilitada(-1) if key == pygame.K_LEFT else
+                          self.navegacion_habilitada(1) if key == pygame.K_RIGHT else True)
+            ui.button(sup,rect,label,enabled=habilitado,primary=key==pygame.K_s,
+                      active=(key==pygame.K_c and self.comparacion) or (key==pygame.K_i and not self.comparacion))
+        if self.comparacion:
+            registro = self.comparacion_seleccionada() or {}
+            ui.text(sup,f"COMPARACION {registro.get('id', '--')}  /  {registro.get('estado','Sin ejecutar')}",(26,100),ui.ACCENT,13,True)
+            ui.text(sup,f"Inicio {registro.get('inicio')}   -   Destino {registro.get('destino')}",(26,129),ui.MUTED)
+            xs=(42,280,540,800)
+            ui.box(sup,pygame.Rect(26,175,1060,44))
+            for x,t in zip(xs,("ALGORITMO","TIEMPO DE BUSQUEDA","NODOS EXPLORADOS","NODOS DE LA RUTA")):
+                ui.text(sup,t,(x,190),ui.MUTED,12,True)
+            for i,r in enumerate(registro.get("resultados", [])):
+                y=231+i*68
+                ui.box(sup,pygame.Rect(26,y,1060,58))
+                for x,v in zip(xs,(r['algoritmo'],f"{r['tiempo']:.6f} s",f"{r['expandidos']:,}",
+                                   "Sin ruta" if r['nodos_ruta'] is None else f"{r['nodos_ruta']:,}")):
+                    ui.text(sup,v,(x,y+17),size=18,bold=True)
+            ui.text(sup,"Explorados = expansiones. En BFS Bidireccional se suman ambos extremos.",(26,610),ui.MUTED,13)
+            ui.text(sup,f"ALT: preparacion compartida {registro.get('preparacion_alt_s', 0):.3f} s, excluida de las busquedas.",(26,637),ui.MUTED,13)
+        else:
+            ses=historial_sesiones[self.indice] if historial_sesiones else None
+            filas=filas_informe(ses)
+            self.scroll=min(self.scroll,max(0,len(filas)-23))
+            for i,(nombre,valor) in enumerate(filas[self.scroll:self.scroll+23]):
+                y=91+i*25
+                section=nombre[:2] in ('A.','B.','C.','D.')
+                if section:
+                    pygame.draw.rect(sup,ui.CARD,(26,y-2,1060,24),border_radius=5)
+                elif i%2==0:
+                    pygame.draw.rect(sup,(18,30,27),(26,y-2,1060,24),border_radius=3)
+                ui.text(sup,nombre,(38,y),ui.ACCENT if section else ui.MUTED,14,section)
+                if isinstance(valor, tuple):
+                    nodos, tiempo = valor
+                    ui.text(sup,nodos,(540,y),ui.TEXT,13,True,width=300)
+                    ui.text(sup,f"{tiempo:.6f} s" if isinstance(tiempo,float) else tiempo,
+                            (865,y),ui.TEXT,13,True,width=215)
+                else:
+                    ui.text(sup,f"{valor:.6f}" if isinstance(valor,float) else valor,(610,y),size=14,bold=True,width=460)
+            ui.text(sup,"Rueda para ver todas las rutas. Anterior / Siguiente cambia de ejecucion.",(26,690),ui.MUTED,13)
+        self.iniciar_comparacion_rect = pygame.Rect(866,679,220,38)
+        if self.comparacion:
+            ui.button(sup,self.iniciar_comparacion_rect,"Iniciar comparacion",
+                      enabled=boton_habilitado("Comparar busquedas"),primary=True)
+        ui.text(sup,self.aviso or "S: exportar   /   ESC: cerrar esta ventana",(26,729),ui.MUTED,13,width=1060)
         self.ventana.flip()
 
     def refrescar(self):
@@ -1638,31 +1591,53 @@ class VentanaInforme:
             self.dibujar()
 
     def evento(self, evento):
-        if evento.type == pygame.WINDOWCLOSE or (
-                evento.type == pygame.KEYDOWN and evento.key == pygame.K_ESCAPE):
+        if evento.type == pygame.MOUSEBUTTONDOWN and evento.button == 1:
+            if self.comparacion and self.iniciar_comparacion_rect.collidepoint(evento.pos):
+                if boton_habilitado("Comparar busquedas"):
+                    iniciar_comparacion()
+                    self.comparacion = True
+                    self.aviso = ""
+                self.dibujar()
+                return True
+            for key, rect in getattr(self, "acciones_ui", {}).items():
+                if rect.collidepoint(evento.pos):
+                    evento = pygame.event.Event(pygame.KEYDOWN, key=key)
+                    break
+        if evento.type == pygame.WINDOWCLOSE or (evento.type == pygame.KEYDOWN and evento.key == pygame.K_ESCAPE):
             self.ventana.destroy()
             return False
-        if evento.type == pygame.KEYDOWN and evento.key == pygame.K_s:
-            a, b = exportar_informe_csv()
-            self.aviso = f"Guardado: {a}, {b}"
-        if evento.type in (pygame.WINDOWEXPOSED, pygame.KEYDOWN):
-            self.dibujar()
+        if evento.type == pygame.MOUSEWHEEL:
+            self.scroll = max(0, self.scroll - evento.y * 3)
+        if evento.type == pygame.KEYDOWN:
+            if evento.key == pygame.K_c:
+                self.comparacion = True
+            elif evento.key == pygame.K_i:
+                self.comparacion = False
+            elif evento.key in (pygame.K_LEFT, pygame.K_RIGHT):
+                self.navegar(1 if evento.key == pygame.K_RIGHT else -1)
+            elif evento.key == pygame.K_s:
+                actualizar_reloj_recorrido()
+                ses = historial_sesiones[self.indice] if historial_sesiones else None
+                self.aviso = exportar_informe_csv(ses, self.comparacion, self.comparacion_seleccionada())
+        self.dibujar()
         return True
 
 
 informe_ventana = None
 
 
-def abrir_informe():
+def abrir_informe(comparacion=False):
     global informe_ventana
     if informe_ventana is None:
-        informe_ventana = VentanaInforme()
+        informe_ventana = VentanaInforme(comparacion)
     else:
+        informe_ventana.comparacion = comparacion
+        informe_ventana.scroll = 0
         informe_ventana.ventana.focus()
         informe_ventana.dibujar()
 
 
-# ------------------ botones y panel ------------------
+
 
 def ciclar(opciones, actual):
     return opciones[(opciones.index(actual) + 1) % len(opciones)]
@@ -1673,11 +1648,10 @@ def etiqueta_boton(nombre):
         "Obstaculos auto": f"Auto: {'ON' if aparicion_auto else 'OFF'} (P)",
         "Obstaculo ahora": "Obstaculo ahora (O)",
         "Limpiar obstaculos": "Limpiar obstaculos (X)",
-        "Comparar BFS vs A*": "Comparar BFS vs A* (C)",
+        "Comparar busquedas": "Comparar busquedas (C)",
         "Zonas bloqueo": f"Zonas bloqueo: {'ON' if mostrar_zonas_bloqueo else 'OFF'} (B)",
         "Sin ruta": f"Sin ruta: {cfg_sin_ruta}",
         "Tamano": f"Tamano: {cfg_tamano}",
-        "Modo": f"Modo: {cfg_modo}",
         "Cada -": "Cada -50", "Cada +": "Cada +50",
         "Max -": "Max -1", "Max +": "Max +1",
         "Detec -": "Deteccion -5", "Detec +": "Deteccion +5",
@@ -1688,10 +1662,10 @@ def etiqueta_boton(nombre):
 
 def boton_habilitado(nombre):
     if nombre in ("Reiniciar", "Visualizar subgrafo", "Informe", "Obstaculos auto",
-                  "Zonas bloqueo", "Tamano", "Modo", "Sin ruta", "Cada -", "Cada +",
+                  "Zonas bloqueo", "Tamano", "Sin ruta", "Cada -", "Cada +",
                   "Max -", "Max +", "Semilla", "Detec -", "Detec +"):
         return True
-    if comparando:
+    if comparando or preparacion_alt is not None:
         return False
     if nombre == "Animar recorrido":
         return tarea_busqueda is None and ruta_encontrada is not None and not animando
@@ -1706,7 +1680,7 @@ def boton_habilitado(nombre):
 
 def accion_cfg(nombre):
     global aparicion_auto, mostrar_zonas_bloqueo, cfg_sin_ruta, cfg_tamano
-    global cfg_modo, cfg_cada_pasos, cfg_maximo, cfg_semilla, cfg_radio_deteccion
+    global cfg_cada_pasos, cfg_maximo, cfg_semilla, cfg_radio_deteccion
     if nombre == "Obstaculos auto":
         aparicion_auto = not aparicion_auto
     elif nombre == "Zonas bloqueo":
@@ -1715,8 +1689,6 @@ def accion_cfg(nombre):
         cfg_sin_ruta = ciclar(("retirar", "detener"), cfg_sin_ruta)
     elif nombre == "Tamano":
         cfg_tamano = ciclar(TAMANOS, cfg_tamano)
-    elif nombre == "Modo":
-        cfg_modo = ciclar(MODOS, cfg_modo)
     elif nombre == "Cada -":
         cfg_cada_pasos = max(50, cfg_cada_pasos - 50)
     elif nombre == "Cada +":
@@ -1741,65 +1713,89 @@ def limpiar_obstaculos_manual():
         mensaje = "Obstaculos dinamicos retirados. Mapa limpio."
 
 
+def accion_interfaz(nombre):
+    global algoritmo_seleccionado
+    if nombre == "Algoritmo":
+        algoritmo_seleccionado = ciclar(ALGORITMOS_DISPONIBLES, algoritmo_seleccionado)
+    elif nombre == "Ejecutar busqueda": ejecutar_busqueda(algoritmo_seleccionado)
+    elif nombre == "Animar recorrido": animar_recorrido()
+    elif nombre == "Visualizar subgrafo": abrir_subgrafo()
+    elif nombre == "Informe": abrir_informe()
+    elif nombre == "Configuracion": abrir_configuracion()
+    elif nombre == "Obstaculo ahora": generar_obstaculo()
+    elif nombre == "Limpiar obstaculos": limpiar_obstaculos_manual()
+    elif nombre == "Comparar busquedas": iniciar_comparacion()
+    elif nombre == "Reiniciar": reiniciar_busqueda()
+    else: accion_cfg(nombre)
+
+
+def habilitado_interfaz(nombre):
+    if nombre == "Configuracion": return True
+    if nombre == "Algoritmo": return not (comparando or animando or tarea_busqueda is not None)
+    if nombre == "Ejecutar busqueda": return boton_habilitado("Ejecutar " + algoritmo_seleccionado)
+    return boton_habilitado(nombre)
+
+
+def cambiar_configuracion(nombre, valor):
+    limites = {"cfg_cada_pasos": (50,1000), "cfg_maximo": (1,30), "cfg_radio_deteccion": (5,100)}
+    if nombre in limites:
+        lo, hi = limites[nombre]
+        globals()[nombre] = max(lo,min(hi,int(valor)))
+    elif nombre == "cfg_semilla":
+        globals()[nombre] = int(valor)
+        gestor_obstaculos.rng.seed(int(valor))
+
+
+def abrir_configuracion():
+    global configuracion_ventana
+    if configuracion_ventana is None:
+        configuracion_ventana = ui.Configuracion(lambda: globals(), accion_interfaz,
+                                                  boton_habilitado, cambiar_configuracion)
+    else:
+        configuracion_ventana.ventana.focus()
+        configuracion_ventana.dibujar()
+
+
 def pulsar_boton(pos):
     for nombre, rect in botones.items():
-        if rect.collidepoint(pos) and boton_habilitado(nombre):
-            if nombre == "Ejecutar BFS": ejecutar_busqueda("BFS")
-            elif nombre == "Ejecutar A*": ejecutar_busqueda("A*")
-            elif nombre == "Animar recorrido": animar_recorrido()
-            elif nombre == "Visualizar subgrafo": abrir_subgrafo()
-            elif nombre == "Informe": abrir_informe()
-            elif nombre == "Obstaculo ahora": generar_obstaculo()
-            elif nombre == "Limpiar obstaculos": limpiar_obstaculos_manual()
-            elif nombre == "Comparar BFS vs A*": iniciar_comparacion()
-            elif nombre == "Reiniciar": reiniciar_busqueda()
-            else: accion_cfg(nombre)
+        if rect.collidepoint(pos) and habilitado_interfaz(nombre):
+            accion_interfaz(nombre)
             return
 
 
 def dibujar_panel():
     y = ALTO - PANEL
-    pygame.draw.rect(pantalla, (30, 35, 40), (0, y, ANCHO, PANEL))
-    for nombre, rect in botones.items():
-        habilitado = boton_habilitado(nombre)
-        activo = ((nombre == "Obstaculos auto" and aparicion_auto)
-                  or (nombre == "Zonas bloqueo" and mostrar_zonas_bloqueo))
-        color = (40, 130, 80) if (habilitado and activo) else (
-            (48, 95, 125) if habilitado else (55, 58, 60))
-        pygame.draw.rect(pantalla, color, rect, border_radius=5)
-        texto = fuente.render(etiqueta_boton(nombre), True,
-                              (255, 255, 255) if habilitado else (145, 145, 145))
-        pantalla.blit(texto, texto.get_rect(center=rect.center))
-    movimientos = len(ruta_encontrada) - 1 if ruta_encontrada is not None else "--"
-    ses = sesion
-    ini = ses["inicial"]
-    resumen = (f"{estadisticas.get('algoritmo', '--')} | Estado: {estadisticas.get('estado', 'Sin ejecutar')} | "
-               f"Tiempo: {estadisticas.get('tiempo', 0):.4f} s | "
-               f"Descubiertos: {estadisticas.get('descubiertos', 0):,} | "
-               f"Expandidos: {estadisticas.get('expandidos', 0):,} | Movimientos: {movimientos}")
-    vista = "Posiciones validas" if mostrar_posiciones_validas else nombres_vista[modo]
-    bloqueadas = cantidad_validas_estatica - cantidad_validas
-    textos = [
-        mensaje,
-        resumen,
-        (f"Obstaculos activos: {len(gestor_obstaculos.obstaculos)} | generados: {ses['obstaculos']} | "
-         f"sin efecto: {ses['sin_efecto']} | replanificaciones: {ses['replans']} "
-         f"(ok {ses['replans_ok']}, sin ruta {ses['replans_fallidas']}) | retirados: {ses['retirados']}"),
-        (f"Aparicion: auto {'ON' if aparicion_auto else 'OFF'} cada {cfg_cada_pasos} pasos, max {cfg_maximo} | "
-         f"tamano {cfg_tamano} | modo {cfg_modo} | sin ruta: {cfg_sin_ruta} | deteccion {cfg_radio_deteccion} px | semilla {cfg_semilla}"),
-        (f"Busqueda acumulada: {ses['t_busqueda']:.4f} s (inicial {0 if ini is None else ini['tiempo']:.4f} s, "
-         f"replans {ses['t_replan']:.4f} s) | Prep. mapa: estatica {TIEMPO_PREPARACION_ESTATICA:.3f} s, "
-         f"obstaculos {ses['t_preparacion'] * 1000:.2f} ms | Animacion: {ses['t_animacion']:.1f} s | Pasos: {ses['pasos']}"),
-        ("Camara siguiendo al NPC (zoom fijo) | Ruta: amarilla | Descartada: naranja | Rastro: rojo" if seguimiento_camara else
-         "Clic: inicio/destino | Arrastrar: camara | Rueda: zoom | Ruta: amarilla | Descartada: naranja | Rastro: rojo"),
-        "1: original | G/4: binaria | V: validas | H: hitbox | R: centrar | O: obstaculo | P: auto | X: limpiar | B: zonas | N: semilla | C: comparar | I: informe",
-        f"Vista: {vista} | NPC: 32x48 | Hitbox: 15x7 | Inicio: {inicio_busqueda} | Destino: {destino_busqueda}",
-        (f"Matriz: {ancho_mapa}x{alto_mapa} | Transitables (px): {cantidad_transitable:,} ({porcentaje_transitable:.2f}%) | "
-         f"Obstaculos (px): {cantidad_obstaculos:,} | Validas: {cantidad_validas:,} ({porcentaje_validas:.2f}%) | "
-         f"Invalidas: {cantidad_invalidas:,} | Bloq. dinamicos: {bloqueadas:,}"),
-    ]
-    for i, texto in enumerate(textos):
-        pantalla.blit(fuente.render(texto, True, (225, 230, 235)), (15, y + 114 + i * 18))
+    pygame.draw.rect(pantalla,ui.PANEL,(0,y,ANCHO,PANEL))
+    pygame.draw.line(pantalla,ui.BORDER,(0,y),(ANCHO,y),1)
+    ui.text(pantalla,"NPC / PATHFINDER",(22,y+12),ui.ACCENT,16,True)
+    estado = ("Preparando mapa" if preparacion_alt is not None else "Comparando" if comparando else "Replanificando" if pausa_replan else
+              "En recorrido" if animando else estadisticas.get("estado","Selecciona inicio y destino"))
+    ui.text(pantalla,estado,(ANCHO-365,y+13),ui.MUTED,14,width=340)
+    mouse=pygame.mouse.get_pos()
+    for nombre,rect in botones.items():
+        label = algoritmo_seleccionado + "  >" if nombre=="Algoritmo" else nombre
+        ui.button(pantalla,rect,label,habilitado_interfaz(nombre),
+                  primary=nombre=="Ejecutar busqueda",hover=rect.collidepoint(mouse))
+    ui.text(pantalla,"BUSQUEDA  /  " + algoritmo_seleccionado,(22,y+105),ui.MUTED,11,True)
+    ui.text(pantalla,"NAVEGACION" + ("  /  " + sesion["algoritmo"] if sesion["algoritmo"] else ""),(610,y+105),ui.MUTED,11,True)
+    ini=sesion.get("inicial")
+    # Values are read from the existing statistics; no calculations are replaced.
+    valores=[("Tiempo de busqueda",f"{estadisticas.get('tiempo',0):.4f} s"),
+             ("Nodos explorados",f"{estadisticas.get('expandidos',0):,}"),
+             ("Ruta inicial / movimientos","--" if ini is None or ini['longitud'] is None else f"{ini['longitud']:,}"),
+             ("Movimientos realizados",f"{sesion['pasos']:,}"),
+             ("Rutas creadas",len(sesion['rutas'])),("Obstaculos generados",sesion['obstaculos'])]
+    if estadisticas.get('algoritmo') != algoritmo_seleccionado:
+        valores[:3]=[(label,"--") for label,_ in valores[:3]]
+    if comparando:
+        valores=[(label,"--") for label,_ in valores]
+    for i,(label,value) in enumerate(valores):
+        x=22+i*194+(6 if i>=3 else 0)
+        ui.box(pantalla,pygame.Rect(x,y+124,182,74))
+        ui.text(pantalla,label,(x+12,y+134),ui.MUTED,11)
+        ui.text(pantalla,value,(x+12,y+153),ui.TEXT,24,True)
+
+
 
 
 inicio_busqueda = destino_busqueda = tarea_busqueda = None
@@ -1831,29 +1827,28 @@ aparicion_auto = False
 cfg_cada_pasos = 150         # un obstaculo cada N pasos del NPC (150 px ~ 1 s)
 cfg_maximo = 5               # maximo de obstaculos automaticos por recorrido
 cfg_tamano = "Mixto"
-cfg_modo = MODO_RUTA
 cfg_sin_ruta = "retirar"     # si un obstaculo cierra toda ruta: retirarlo o detener
 cfg_semilla = SEMILLA_INICIAL
-cfg_radio_deteccion = 25     # el NPC detecta bloqueos a <= N nodos por delante
-resultados_sesion = {}       # ultimo resultado de cada algoritmo (informe)
+cfg_radio_deteccion = 10     # el NPC detecta bloqueos a <= N nodos por delante
+IDENTIFICADOR_APERTURA = str(time_ns())
+resultados_sesion = {}
+historial_sesiones = []
+historial_comparaciones = []
+resultados_comparacion = []
+contexto_comparacion = {}
+numero_comparacion = 0
 sesion = nueva_sesion(None)
 
-_filas_botones = (
-    (ALTO-PANEL+8, 34, ("Ejecutar BFS","Ejecutar A*","Animar recorrido","Reiniciar","Visualizar subgrafo","Informe")),
-    (ALTO-PANEL+46, 30, ("Obstaculos auto","Obstaculo ahora","Limpiar obstaculos","Comparar BFS vs A*","Zonas bloqueo","Sin ruta")),
-)
+algoritmo_seleccionado = ALGORITMOS_DISPONIBLES[0]
+configuracion_ventana = None
 botones = {}
-for _y, _alto, _nombres in _filas_botones:
-    for _i, _n in enumerate(_nombres):
-        botones[_n] = pygame.Rect(15+_i*185, _y, 175, _alto)
-_y3 = ALTO-PANEL+80
-botones["Tamano"] = pygame.Rect(15, _y3, 175, 28)
-botones["Modo"] = pygame.Rect(200, _y3, 175, 28)
-for _i, _n in enumerate(("Cada -","Cada +","Max -","Max +")):
-    botones[_n] = pygame.Rect(385+_i*92, _y3, 87, 28)
-botones["Semilla"] = pygame.Rect(753, _y3, 175, 28)
-botones["Detec -"] = pygame.Rect(938, _y3, 118, 28)
-botones["Detec +"] = pygame.Rect(1062, _y3, 118, 28)
+_x = 22
+for _nombre,_ancho in (("Algoritmo",150),("Ejecutar busqueda",160),("Animar recorrido",156),
+                      ("Reiniciar",100),("Visualizar subgrafo",164),("Informe",98),("Configuracion",148)):
+    botones[_nombre]=pygame.Rect(_x,ALTO-PANEL+47,_ancho,42)
+    _x += _ancho+10
+
+
 clic_inicial = None
 hubo_arrastre = False
 
@@ -1876,10 +1871,16 @@ while ejecutando:
         0.05
     )
 
+    actualizar_reloj_recorrido()
+
     for evento in pygame.event.get():
 
         origen_evento = getattr(evento, "window", None)
         id_ventana = getattr(origen_evento, "id", origen_evento)
+        if configuracion_ventana is not None and id_ventana == configuracion_ventana.ventana.id:
+            if not configuracion_ventana.evento(evento):
+                configuracion_ventana = None
+            continue
         if visualizador_subgrafo is not None and id_ventana == visualizador_subgrafo.ventana.id:
             if not visualizador_subgrafo.evento(evento):
                 visualizador_subgrafo = None
@@ -1951,7 +1952,7 @@ while ejecutando:
             elif evento.key == pygame.K_n:
                 accion_cfg("Semilla")
 
-            elif evento.key == pygame.K_c and boton_habilitado("Comparar BFS vs A*"):
+            elif evento.key == pygame.K_c and boton_habilitado("Comparar busquedas"):
                 iniciar_comparacion()
 
             elif evento.key == pygame.K_i:
@@ -2025,6 +2026,7 @@ while ejecutando:
     # ACTUALIZAR EL NPC
     # --------------------------------------------------------
 
+    avanzar_preparacion_alt()
     avanzar_busqueda()
     avanzar_comparacion()
     if not encuadrando_npc:
@@ -2035,12 +2037,15 @@ while ejecutando:
     actualizar_seguimiento(dt)
     if informe_ventana is not None:
         informe_ventana.refrescar()
+    if configuracion_ventana is not None:
+        configuracion_ventana.refrescar()
 
     # ========================================================
     # DIBUJAR EL MAPA
     # ========================================================
 
-    pantalla.fill((20, 23, 27))
+    pantalla.fill(ui.BG)
+    pantalla.set_clip(pygame.Rect(0,0,ANCHO,ALTO-PANEL))
 
     pantalla.blit(
         mapa_escalado,
@@ -2070,6 +2075,10 @@ while ejecutando:
     # PANEL INFERIOR
     # ========================================================
 
+    pantalla.set_clip(None)
+    if mensaje:
+        ui.box(pantalla,pygame.Rect(20,18,650,34),ui.PANEL,9)
+        ui.text(pantalla,mensaje,(32,26),ui.TEXT,13,width=626)
     dibujar_panel()
 
     pygame.display.flip()
@@ -2079,4 +2088,5 @@ while ejecutando:
 # 12. CERRAR PYGAME
 # ============================================================
 
+interrumpir_recorrido("Interrumpido al cerrar")
 pygame.quit()

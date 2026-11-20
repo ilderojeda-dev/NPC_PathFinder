@@ -1,5 +1,5 @@
 """
-Obstaculos dinamicos para el proyecto de busqueda de rutas (BFS / A*).
+Obstaculos dinamicos para el proyecto de busqueda de rutas.
 
 Este modulo NO conoce Pygame mas alla de dibujar los sprites; toda la logica
 de transitabilidad trabaja unicamente con arrays de NumPy.
@@ -10,7 +10,7 @@ Arquitectura de tres capas
 2. ``mascara``   : contador (uint16) de cuantos obstaculos dinamicos invalidan
                    cada posicion de centro de hitbox.
 3. ``efectiva``  : ``estatica & (mascara == 0)``. Es la unica matriz que
-                   consultan BFS, A*, las colisiones y el visualizador.
+                   consultan los tres algoritmos, las colisiones y el visualizador.
 
 Colocar o retirar un obstaculo solo recalcula la ventana rectangular que el
 obstaculo inflado por la hitbox puede afectar: O(area del obstaculo), nunca
@@ -39,10 +39,6 @@ CATALOGO = {
 CATALOGO["Mixto"] = (CATALOGO["Pequeno"] + CATALOGO["Mediano"]
                      + CATALOGO["Grande"])
 TAMANOS = ("Pequeno", "Mediano", "Grande", "Mixto")
-
-MODO_RUTA = "En la ruta"      # El obstaculo cae sobre el tramo que falta.
-MODO_LIBRE = "Libre"          # Cualquier lugar valido; puede no afectar.
-MODOS = (MODO_RUTA, MODO_LIBRE)
 
 # Margenes de seguridad (en pixeles) medidos sobre la zona inflada.
 MARGEN_NPC = 12          # Nunca aparece debajo ni pegado al NPC.
@@ -230,41 +226,21 @@ class GestorObstaculosDinamicos:
     def instanciar_evento(self, ev):
         return self.instanciar(ev.tipo, ev.x, ev.y, ev.ancho, ev.alto, ev.semilla_sprite)
 
-    def _nodo_valido_aleatorio(self):
-        for _ in range(400):
-            x = self.rng.randrange(self.ancho)
-            y = self.rng.randrange(self.alto)
-            if self.efectiva[y, x]:
-                return x, y
-        return None
-
-    def proponer(self, modo, tamano, ruta=None, indice=0, npc=None,
+    def proponer(self, tamano, ruta=None, indice=0, npc=None,
                  destino=None, rango=(24, 120), intentos=120):
-        """Propone (sin colocar) un obstaculo valido o devuelve None.
-
-        modo="En la ruta": la huella se centra en un nodo del tramo que aun
-        no recorre el NPC, entre ``rango[0]`` y ``rango[1]`` nodos por delante,
-        de modo que el obstaculo es visible y bloquea de verdad el recorrido.
-        modo="Libre": sobre cualquier posicion valida del mapa.
-        """
+        """Propone un obstaculo sobre el tramo pendiente de la ruta."""
+        if ruta is None:
+            return None
         opciones = CATALOGO[tamano]
-        usar_ruta = modo == MODO_RUTA and ruta is not None
-        if usar_ruta:
-            lo = indice + rango[0]
-            hi = min(indice + rango[1], len(ruta) - 1 - DISTANCIA_MIN_DESTINO)
-            if hi < lo:
-                return None
+        lo = indice + rango[0]
+        hi = min(indice + rango[1], len(ruta) - 1 - DISTANCIA_MIN_DESTINO)
+        if hi < lo:
+            return None
         for _ in range(intentos):
             tipo, w, h = self.rng.choice(opciones)
-            if usar_ruta:
-                cx, cy = ruta[self.rng.randint(lo, hi)]
-                x = cx - w // 2 + self.rng.randint(-2, 2)
-                y = cy - h // 2 + self.rng.randint(-1, 1)
-            else:
-                nodo = self._nodo_valido_aleatorio()
-                if nodo is None:
-                    return None
-                x, y = nodo[0] - w // 2, nodo[1] - h // 2
+            cx, cy = ruta[self.rng.randint(lo, hi)]
+            x = cx - w // 2 + self.rng.randint(-2, 2)
+            y = cy - h // 2 + self.rng.randint(-1, 1)
             if self.candidato_valido(x, y, w, h, npc, destino):
                 return self.instanciar(tipo, x, y, w, h, self.rng.randrange(1 << 30))
         return None

@@ -1,4 +1,3 @@
-
 # Archivos temporales de Python
 __pycache__/
 *.py[cod]
@@ -13,3 +12,7 @@ Thumbs.db
 
 # Configuración local
 .env
+
+# Carpetas del proyecto a ignorar
+Datos_generados/
+tests/
