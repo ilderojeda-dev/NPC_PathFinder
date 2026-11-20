@@ -1646,7 +1646,7 @@ def ciclar(opciones, actual):
 def etiqueta_boton(nombre):
     return {
         "Obstaculos auto": f"Auto: {'ON' if aparicion_auto else 'OFF'} (P)",
-        "Obstaculo ahora": "Obstaculo ahora (O)",
+        "Obstaculo ahora": "Obstaculo ahora (Q)",
         "Limpiar obstaculos": "Limpiar obstaculos (X)",
         "Comparar busquedas": "Comparar busquedas (C)",
         "Zonas bloqueo": f"Zonas bloqueo: {'ON' if mostrar_zonas_bloqueo else 'OFF'} (B)",
@@ -1774,17 +1774,23 @@ def dibujar_panel():
     mouse=pygame.mouse.get_pos()
     for nombre,rect in botones.items():
         label = algoritmo_seleccionado + "  >" if nombre=="Algoritmo" else nombre
-        ui.button(pantalla,rect,label,habilitado_interfaz(nombre),
-                  primary=nombre=="Ejecutar busqueda",hover=rect.collidepoint(mouse))
+        if nombre == "Configuracion":
+            ui.boton_configuracion(pantalla,rect,hover=rect.collidepoint(mouse))
+        else:
+            ui.button(pantalla,rect,label,habilitado_interfaz(nombre),
+                      primary=nombre=="Ejecutar busqueda",hover=rect.collidepoint(mouse))
     ui.text(pantalla,"BUSQUEDA  /  " + algoritmo_seleccionado,(22,y+105),ui.MUTED,11,True)
     ui.text(pantalla,"NAVEGACION" + ("  /  " + sesion["algoritmo"] if sesion["algoritmo"] else ""),(610,y+105),ui.MUTED,11,True)
     ini=sesion.get("inicial")
-    # Values are read from the existing statistics; no calculations are replaced.
+    # El reloj del recorrido ya incluye las pausas de replanificacion.
+    # Solo se suma la busqueda inicial, previa a pulsar Animar recorrido.
+    tiempo_inicial = ini["tiempo"] if ini is not None else estadisticas.get("tiempo", 0.0)
+    tiempo_total = tiempo_inicial + sesion["t_total"]
     valores=[("Tiempo de busqueda",f"{estadisticas.get('tiempo',0):.4f} s"),
              ("Nodos explorados",f"{estadisticas.get('expandidos',0):,}"),
              ("Ruta inicial / movimientos","--" if ini is None or ini['longitud'] is None else f"{ini['longitud']:,}"),
              ("Movimientos realizados",f"{sesion['pasos']:,}"),
-             ("Rutas creadas",len(sesion['rutas'])),("Obstaculos generados",sesion['obstaculos'])]
+             ("Rutas creadas",len(sesion['rutas'])),("Tiempo total",f"{tiempo_total:.2f} s")]
     if estadisticas.get('algoritmo') != algoritmo_seleccionado:
         valores[:3]=[(label,"--") for label,_ in valores[:3]]
     if comparando:
@@ -1844,7 +1850,7 @@ configuracion_ventana = None
 botones = {}
 _x = 22
 for _nombre,_ancho in (("Algoritmo",150),("Ejecutar busqueda",160),("Animar recorrido",156),
-                      ("Reiniciar",100),("Visualizar subgrafo",164),("Informe",98),("Configuracion",148)):
+                      ("Reiniciar",100),("Visualizar subgrafo",164),("Informe",98),("Configuracion",44)):
     botones[_nombre]=pygame.Rect(_x,ALTO-PANEL+47,_ancho,42)
     _x += _ancho+10
 
@@ -1937,7 +1943,7 @@ while ejecutando:
             elif evento.key == pygame.K_h:
                 mostrar_hitbox_pies = not mostrar_hitbox_pies
 
-            elif evento.key == pygame.K_o:
+            elif evento.key == pygame.K_q:
                 generar_obstaculo()
 
             elif evento.key == pygame.K_p:

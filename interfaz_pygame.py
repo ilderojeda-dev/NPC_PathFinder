@@ -1,5 +1,6 @@
 """Presentacion Pygame: tema y configuracion. Sin logica de busqueda."""
 import pygame
+import math
 
 BG = (14, 24, 23)
 PANEL = (20, 34, 31)
@@ -46,6 +47,23 @@ def button(surface, rect, label, enabled=True, primary=False, active=False, hove
     surface.blit(image, image.get_rect(center=rect.center))
 
 
+def boton_configuracion(surface, rect, hover=False):
+    """Engranaje dibujado sin depender de fuentes con simbolos especiales."""
+    button(surface, rect, "", hover=hover)
+    cx, cy = rect.center
+    puntos = []
+    for i in range(32):
+        angulo = i * math.tau / 32
+        radio = 13 if i % 4 in (1, 2) else 10
+        puntos.append((round(cx + math.cos(angulo)*radio), round(cy + math.sin(angulo)*radio)))
+    pygame.draw.polygon(surface, ACCENT if hover else TEXT, puntos)
+    pygame.draw.circle(surface, (44, 67, 54) if hover else CARD, (cx, cy), 5)
+    if hover:
+        tooltip = pygame.Rect(rect.right-130, rect.y-31, 130, 25)
+        box(surface, tooltip, BG, 6)
+        text(surface, "Configuracion", (tooltip.x+10, tooltip.y+4), size=12)
+
+
 class Configuracion:
     def __init__(self, estado, accion, habilitado, cambiar):
         self.estado, self.accion, self.habilitado, self.cambiar = estado, accion, habilitado, cambiar
@@ -53,7 +71,6 @@ class Configuracion:
         self.controles = {
             'Obstaculos auto': pygame.Rect(28, 126, 340, 44),
             'Zonas bloqueo': pygame.Rect(390, 126, 340, 44),
-            'Obstaculo ahora': pygame.Rect(28, 184, 340, 40),
             'Limpiar obstaculos': pygame.Rect(390, 184, 340, 40),
             'Tamano': pygame.Rect(28, 474, 340, 42),
             'Sin ruta': pygame.Rect(390, 474, 340, 42),
@@ -89,6 +106,8 @@ class Configuracion:
                 track = pygame.Rect(rect.right-58,rect.y+12,42,22)
                 pygame.draw.rect(s, ACCENT if on else BORDER, track, border_radius=11)
                 pygame.draw.circle(s, INK if on else MUTED,(track.right-11 if on else track.x+11,track.centery),8)
+        text(s, 'En el mapa, pulsa Q para agregar', (28, 185), ACCENT, 14, True)
+        text(s, 'un obstaculo durante el recorrido.', (28, 207), MUTED, 13)
         text(s, 'RITMO Y DETECCION', (28, 253), ACCENT, 12, True)
         for key,(r,lo,hi,step,label) in self.sliders.items():
             value=e[key]; x=r.x+round((value-lo)/(hi-lo)*r.w)
