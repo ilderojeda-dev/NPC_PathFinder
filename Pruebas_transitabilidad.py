@@ -1,9 +1,21 @@
+# Configurar DPI antes de crear ventanas: texto dibujado a resolucion nativa.
+import os
+os.environ.setdefault("SDL_WINDOWS_DPI_AWARENESS", "permonitorv2")
+os.environ.setdefault("SDL_VIDEO_CENTERED", "1")
+if os.name == "nt":
+    import ctypes
+    try:
+        ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
+    except (AttributeError, OSError):
+        pass
+
 import pygame
 import numpy as np
 from pathlib import Path
 from time import perf_counter, time_ns
 import math
 import csv
+import re
 import interfaz_pygame as ui
 from algoritmos_busqueda import MotorPathfinding, ALGORITMOS_DISPONIBLES
 
@@ -26,7 +38,9 @@ RUTA_MASCARA = CARPETA / "Recursos" / "mascara_obstaculos.png"
 
 ANCHO = 1200
 ALTO = 900
-PANEL = 220   # Barra de acciones y tarjetas; el resto es viewport del mapa
+ANCHO_LATERAL = ui.BarraLateral.ANCHO   # Barra derecha de controles; el resto es el visor del mapa
+ANCHO_VISTA = ANCHO - ANCHO_LATERAL
+ALTO_VISTA = ALTO
 
 # Tamaño al que se mostrará cada cuadro del aventurero.
 ANCHO_NPC = 32
@@ -62,7 +76,12 @@ ZOOM_SEGUIMIENTO = 2.0
 
 pygame.init()
 
-pantalla = pygame.display.set_mode((ANCHO, ALTO))
+# Reservar espacio para decoraciones y barra de tareas del escritorio.
+escritorio_ancho, escritorio_alto = pygame.display.get_desktop_sizes()[0]
+ANCHO = min(ANCHO, max(1, escritorio_ancho - 80))
+ALTO = min(ALTO, max(1, escritorio_alto - 100))
+ANCHO_VISTA, ALTO_VISTA = ANCHO - ANCHO_LATERAL, ALTO
+pantalla = pygame.display.set_mode((ANCHO, ALTO), pygame.RESIZABLE)
 pygame.display.set_caption("NPC PathFinder | Forest Navigation")
 
 fuente = ui.font(14)
@@ -165,23 +184,45 @@ def centro_hitbox():
 
 
 def marcar_rastro(x, y):
-    """Pinta un pixel del mundo por cada nodo realmente visitado."""
-    global rastro_modificado
-    if capa_rastro.get_at((x, y)).a == 0:
-        capa_rastro.set_at((x, y), (255, 0, 0, 255))
-        rastro_modificado = True
+    """Registra cada nodo realmente visitado; se dibuja como linea vectorial."""
+    if not rastro_puntos or rastro_puntos[-1] != (x, y):
+        rastro_puntos.append((x, y))
+
+
+def vertices_ortogonales(puntos):
+    """Reduce nodos contiguos a sus esquinas: la linea se ve igual con menos puntos."""
+    if len(puntos) < 3:
+        return list(puntos)
+    salida = [puntos[0]]
+    for i in range(1, len(puntos) - 1):
+        a, b, c = puntos[i - 1], puntos[i], puntos[i + 1]
+        if (b[0] - a[0], b[1] - a[1]) != (c[0] - b[0], c[1] - b[1]):
+            salida.append(b)
+    salida.append(puntos[-1])
+    return salida
+
+
+def a_pantalla(puntos):
+    """Coordenadas del mapa -> pantalla (centro de cada nodo)."""
+    sx = mapa_escalado.get_width() / ancho_mapa
+    sy = mapa_escalado.get_height() / alto_mapa
+    ox, oy = int(desplazamiento_x), int(desplazamiento_y)
+    return [(round(ox + (x + .5) * sx), round(oy + (y + .5) * sy)) for x, y in puntos]
+
+
+def ancho_linea():
+    """Grosor de las lineas de ruta: legible con poco zoom, sin engrosarse de mas."""
+    return max(3, round(1.5 * zoom + 1.5))
 
 
 def dibujar_rastro():
-    """Capa independiente del mapa y las matrices, con el mismo zoom."""
-    global rastro_escalado, rastro_modificado
-    tamano = mapa_escalado.get_size()
-    if (rastro_modificado or rastro_escalado is None
-            or rastro_escalado.get_size() != tamano):
-        rastro_escalado = pygame.transform.scale(capa_rastro, tamano)
-        rastro_modificado = False
-    pantalla.blit(rastro_escalado,
-                  (int(desplazamiento_x), int(desplazamiento_y)))
+    """Recorrido del NPC como polilinea (reemplaza la capa de pixeles)."""
+    global rastro_cache
+    if len(rastro_puntos) < 2:
+        return
+    if rastro_cache[0] != len(rastro_puntos):
+        rastro_cache = (len(rastro_puntos), vertices_ortogonales(rastro_puntos))
+    ui.polilinea(pantalla, a_pantalla(rastro_cache[1]), (255, 96, 84), max(2, ancho_linea() - 1), grosor_borde=1)
 
 
 def mover_npc_con_colisiones(dx, dy, distancia):
@@ -368,8 +409,8 @@ nombres_vista = {
 }
 
 zoom_minimo = min(
-    (ANCHO - 40) / ancho_mapa,
-    (ALTO - PANEL - 40) / alto_mapa
+    (ANCHO_VISTA - 40) / ancho_mapa,
+    (ALTO_VISTA - 40) / alto_mapa
 )
 
 zoom_maximo = min(
@@ -380,11 +421,11 @@ zoom_maximo = min(
 zoom = zoom_minimo
 
 desplazamiento_x = (
-    ANCHO - ancho_mapa * zoom
+    ANCHO_VISTA - ancho_mapa * zoom
 ) / 2
 
 desplazamiento_y = (
-    ALTO - PANEL - alto_mapa * zoom
+    ALTO_VISTA - alto_mapa * zoom
 ) / 2
 
 
@@ -404,10 +445,8 @@ resto_movimiento = 0.0
 sentido_movimiento = (0, 0)
 # Rastro de esta ejecucion: un pixel amarillo por centro visitado.
 # Incluye el nodo inicial y no modifica el mapa ni la transitabilidad.
-capa_rastro = pygame.Surface((ancho_mapa, alto_mapa), pygame.SRCALPHA)
-capa_rastro.fill((0, 0, 0, 0))
-rastro_escalado = None
-rastro_modificado = True
+rastro_puntos = []            # nodos realmente recorridos por el NPC
+rastro_cache = (0, [])
 
 direccion_npc = "abajo"
 indice_frame_npc = 0
@@ -457,11 +496,11 @@ def centrar_mapa():
     zoom = zoom_minimo
 
     desplazamiento_x = (
-        ANCHO - ancho_mapa * zoom
+        ANCHO_VISTA - ancho_mapa * zoom
     ) / 2
 
     desplazamiento_y = (
-        ALTO - PANEL - alto_mapa * zoom
+        ALTO_VISTA - alto_mapa * zoom
     ) / 2
 
     actualizar_vista()
@@ -502,7 +541,7 @@ def centro_visual_mundo():
 
 def centro_pies_pantalla():
     if seguimiento_camara and not encuadrando_npc:
-        return ANCHO/2, (ALTO-PANEL)/2
+        return ANCHO_VISTA/2, ALTO_VISTA/2
     x,y = centro_visual_mundo()
     sx = mapa_escalado.get_width()/ancho_mapa
     sy = mapa_escalado.get_height()/alto_mapa
@@ -522,8 +561,8 @@ def actualizar_seguimiento(dt):
     x,y = centro_visual_mundo()
     sx = mapa_escalado.get_width()/ancho_mapa
     sy = mapa_escalado.get_height()/alto_mapa
-    destino_x = ANCHO/2-(x+.5)*sx
-    destino_y = (ALTO-PANEL)/2-(y+.5)*sy
+    destino_x = ANCHO_VISTA/2-(x+.5)*sx
+    destino_y = ALTO_VISTA/2-(y+.5)*sy
     if encuadrando_npc:
         # Transicion inicial con NPC quieto: iniciar recorrido ya centrado.
         desplazamiento_x += (destino_x-desplazamiento_x)*factor
@@ -683,7 +722,7 @@ def avanzar_preparacion_alt():
 
 
 def mouse_a_nodo(pos):
-    if not (0 <= pos[0] < ANCHO and 0 <= pos[1] < ALTO-PANEL):
+    if not (0 <= pos[0] < ANCHO_VISTA and 0 <= pos[1] < ALTO_VISTA):
         return None
     # Mismos origen y dimensiones enteras usados al dibujar mapa_escalado.
     x = math.floor((pos[0]-int(desplazamiento_x))*ancho_mapa/mapa_escalado.get_width())
@@ -694,7 +733,7 @@ def mouse_a_nodo(pos):
 def ubicar_en_inicio():
     detener_seguimiento()
     global npc_x, npc_y, resto_movimiento, sentido_movimiento
-    global indice_ruta, acumulado_ruta, rastro_modificado
+    global indice_ruta, acumulado_ruta
     global moviendo_npc, indice_frame_npc, tiempo_animacion_npc
     npc_x, y = inicio_busqueda
     npc_y = y + ALTO_HITBOX_PIES//2 + 1
@@ -704,8 +743,7 @@ def ubicar_en_inicio():
     moviendo_npc = False
     indice_frame_npc = 0
     tiempo_animacion_npc = 0.0
-    capa_rastro.fill((0,0,0,0))
-    rastro_modificado = True
+    rastro_puntos.clear()
     marcar_rastro(*inicio_busqueda)
 
 
@@ -713,7 +751,7 @@ def reiniciar_busqueda():
     interrumpir_recorrido("Interrumpido por reinicio")
     detener_seguimiento()
     global inicio_busqueda, destino_busqueda, tarea_busqueda, ruta_encontrada
-    global animando, mensaje, estadisticas, rastro_modificado, ruta_escalada
+    global animando, mensaje, estadisticas
     global moviendo_npc, comparando, tarea_comparacion, pausa_replan
     global replan_actual, sesion, algoritmo_activo, ruta_inicial, ruta_np
     global pasos_desde_obstaculo
@@ -733,10 +771,7 @@ def reiniciar_busqueda():
     pasos_desde_obstaculo = 0
     estadisticas = {}
     animando = moviendo_npc = False
-    capa_rastro.fill((0,0,0,0))
-    capa_ruta.fill((0,0,0,0))
-    rastro_modificado = True
-    ruta_escalada = None
+    rastro_puntos.clear()
     mensaje = "Selecciona el inicio con un clic y despues el destino."
 
 
@@ -759,7 +794,7 @@ def seleccionar_punto(pos):
 
 
 def ejecutar_busqueda(algoritmo):
-    global tarea_busqueda, animando, ruta_encontrada, estadisticas, mensaje, ruta_escalada
+    global tarea_busqueda, animando, ruta_encontrada, estadisticas, mensaje
     global algoritmo_activo, sesion, ruta_inicial, ruta_np, pausa_replan, replan_actual
     if preparacion_alt is not None or inicio_busqueda is None or destino_busqueda is None or tarea_busqueda is not None or comparando:
         return
@@ -770,8 +805,6 @@ def ejecutar_busqueda(algoritmo):
     pausa_replan, replan_actual = False, None
     ubicar_en_inicio()
     ruta_encontrada = ruta_inicial = ruta_np = None
-    capa_ruta.fill((0,0,0,0))
-    ruta_escalada = None
     algoritmo_activo = algoritmo
     gestor_obstaculos.rng.seed(cfg_semilla)
     sesion = nueva_sesion(algoritmo)
@@ -783,7 +816,7 @@ def ejecutar_busqueda(algoritmo):
 
 
 def avanzar_busqueda():
-    global tarea_busqueda, ruta_encontrada, mensaje, ruta_escalada, ruta_inicial
+    global tarea_busqueda, ruta_encontrada, mensaje, ruta_inicial
     if tarea_busqueda is None:
         return
     try:
@@ -806,7 +839,6 @@ def avanzar_busqueda():
             ruta_encontrada = None
             registrar_inicial(sesion, estadisticas, None)
             sesion["resultado"] = "Sin camino"
-        ruta_escalada = None
 
 
 def animar_recorrido():
@@ -830,25 +862,36 @@ def animar_recorrido():
 
 
 def dibujar_resultado():
-    global ruta_escalada, descartada_escalada
-    if descartada_escalada is None or descartada_escalada.get_size() != mapa_escalado.get_size():
-        descartada_escalada = pygame.transform.scale(capa_descartada, mapa_escalado.get_size())
-    pantalla.blit(descartada_escalada, (int(desplazamiento_x), int(desplazamiento_y)))
-    if ruta_encontrada is not None:
-        if ruta_escalada is None or ruta_escalada.get_size() != mapa_escalado.get_size():
-            ruta_escalada = pygame.transform.scale(capa_ruta, mapa_escalado.get_size())
-        pantalla.blit(ruta_escalada, (int(desplazamiento_x), int(desplazamiento_y)))
-    for nodo, color, etiqueta in ((inicio_busqueda,(50,255,110),"Inicio"),
-                                  (destino_busqueda,(255,80,240),"Destino")):
+    ancho = ancho_linea()
+    for tramo in rutas_descartadas:
+        ui.polilinea(pantalla, a_pantalla(tramo), (255, 150, 52), max(2, ancho - 1), grosor_borde=1)
+    if ruta_encontrada is not None and ruta_vertices:
+        ui.polilinea(pantalla, a_pantalla(ruta_vertices), (255, 214, 64), ancho)
+    for nodo, color, etiqueta in ((inicio_busqueda, (84, 232, 128), "Inicio"),
+                                  (destino_busqueda, (255, 110, 236), "Destino")):
         if nodo is not None:
-            x = int(desplazamiento_x) + (nodo[0]+.5)*mapa_escalado.get_width()/ancho_mapa
-            y = int(desplazamiento_y) + (nodo[1]+.5)*mapa_escalado.get_height()/alto_mapa
-            pygame.draw.circle(pantalla, (0,0,0), (round(x),round(y)), 7)
-            pygame.draw.circle(pantalla, color, (round(x),round(y)), 5)
-            pantalla.blit(fuente.render(etiqueta, True, color), (x+8,y-15))
+            ui.marcador(pantalla, a_pantalla([nodo])[0], color, etiqueta)
 
 
 # Visualizador local: consulta la matriz existente y no almacena el grafo.
+_ACENTOS = {
+    "busqueda": "búsqueda", "Busqueda": "Búsqueda", "busquedas": "búsquedas", "Busquedas": "Búsquedas",
+    "despues": "después", "replanificacion": "replanificación", "Replanificacion": "Replanificación",
+    "ejecucion": "ejecución", "Ejecucion": "Ejecución", "comparacion": "comparación", "Comparacion": "Comparación",
+    "preparacion": "preparación", "Preparacion": "Preparación", "valido": "válido", "validos": "válidos",
+    "validas": "válidas", "Posicion": "Posición", "Region": "Región", "region": "región",
+    "dinamicos": "dinámicos", "dinamico": "dinámico", "Obstaculos": "Obstáculos", "obstaculo": "obstáculo",
+    "obstaculos": "obstáculos", "Arboles": "Árboles", "catalogo": "catálogo", "estatico": "estático",
+    "analisis": "análisis", "Analisis": "Análisis", "invalidos": "inválidos", "camino": "camino",
+}
+_PATRON_ACENTOS = re.compile(r"\b(" + "|".join(map(re.escape, _ACENTOS)) + r")\b")
+
+
+def acentuar(texto):
+    """Solo para mostrar en pantalla: los mensajes internos y los CSV no cambian."""
+    return _PATRON_ACENTOS.sub(lambda m: _ACENTOS[m.group(0)], str(texto))
+
+
 def crear_imagen_subgrafo(x, y, ancho, alto):
     filas, columnas = matriz_posiciones_validas.shape
     if x < 0 or y < 0 or ancho <= 0 or alto <= 0:
@@ -887,64 +930,121 @@ def crear_imagen_subgrafo(x, y, ancho, alto):
 
 
 class VisualizadorSubgrafo:
-    """Ventana secundaria. Cerrar esta ventana no llama a interrumpir_recorrido("Interrumpido al cerrar")
-pygame.quit()."""
+    """Ventana secundaria: elige una region y muestra sus nodos validos y conexiones.
+    Cerrarla no interrumpe el recorrido ni cierra la aplicacion."""
+    TAM_CONFIG, TAM_RESULTADO = (640, 560), (960, 920)
+
     def __init__(self):
-        self.ventana = pygame.Window("Configurar subgrafo", size=(700,430))
+        self.ventana = pygame.Window("Subgrafo del mapa", size=self.TAM_CONFIG)
         self.campos = ["450", "400", "50", "50"]
         self.activo = 0
         self.reemplazar = True
         self.error = ""
         self.imagen = None
-        self.rects = [pygame.Rect(270,65+i*55,200,36) for i in range(4)]
-        self.confirmar = pygame.Rect(270,300,200,38)
-        self.volver = pygame.Rect(15,15,170,32)
+        self.rects = [pygame.Rect(28 + (i % 2) * 292, 148 + (i // 2) * 88, 280, 40) for i in range(4)]
+        self.btn_vista = pygame.Rect(28, 346, 286, 36)
+        self.btn_npc = pygame.Rect(326, 346, 286, 36)
+        self.confirmar = pygame.Rect(28, 398, 584, 44)
+        self.volver = pygame.Rect(self.TAM_RESULTADO[0] - 16 - 170, 18, 170, 36)
         self.dibujar()
+
+    def centrar_en(self, cx, cy):
+        filas, columnas = matriz_posiciones_validas.shape
+        try:
+            w, h = int(self.campos[2]), int(self.campos[3])
+        except ValueError:
+            w = h = 50
+        w, h = max(1, min(w, columnas)), max(1, min(h, filas))
+        x = max(0, min(columnas - w, int(cx - w / 2)))
+        y = max(0, min(filas - h, int(cy - h / 2)))
+        self.campos = [str(x), str(y), str(w), str(h)]
+        self.error = ""
+
+    def centrar_en_vista(self):
+        sx = mapa_escalado.get_width() / ancho_mapa
+        sy = mapa_escalado.get_height() / alto_mapa
+        self.centrar_en((ANCHO_VISTA / 2 - desplazamiento_x) / sx, (ALTO_VISTA / 2 - desplazamiento_y) / sy)
+
+    def centrar_en_npc(self):
+        if inicio_busqueda is None:
+            self.error = "Marca un punto de inicio en el mapa para usar la posición del NPC."
+            return
+        self.centrar_en(*centro_hitbox())
 
     def generar(self):
         try:
             valores = [int(c) for c in self.campos]
             imagen, nodos, aristas = crear_imagen_subgrafo(*valores)
         except ValueError as error:
-            self.error = str(error)
+            self.error = acentuar(error)
             self.dibujar()
             return
         self.imagen = imagen
         self.region = valores
         self.nodos, self.aristas = nodos, aristas
         self.ventana.title = "Subgrafo del mapa - nodos y conexiones"
-        self.ventana.size = (960,850)
-        factor = min(920/imagen.get_width(), 700/imagen.get_height(), 1)
+        self.ventana.size = self.TAM_RESULTADO
+        factor = min(884 / imagen.get_width(), 700 / imagen.get_height(), 1)   # 1 = sin escalar: lineas nitidas
         self.presentacion = pygame.transform.scale(imagen,
-            (max(1,int(imagen.get_width()*factor)), max(1,int(imagen.get_height()*factor))))
+            (max(1, int(imagen.get_width() * factor)), max(1, int(imagen.get_height() * factor))))
         self.dibujar()
 
     def dibujar(self):
-        superficie = self.ventana.get_surface()
-        superficie.fill(ui.BG)
+        s = self.ventana.get_surface()
+        s.fill(ui.BG)
+        mouse = pygame.mouse.get_pos()
         if self.imagen is None:
-            textos = [("Region en coordenadas del mapa (x = columna, y = fila)",(20,20)),
-                      ("Clic o TAB: campo | Escribir: valor | ENTER: visualizar | ESC: cerrar",(20,360)),
-                      (self.error,(20,390))]
-            for i,nombre in enumerate(("X inicial", "Y inicial", "Ancho", "Alto")):
-                superficie.blit(fuente.render(nombre,True,ui.TEXT),(130,75+i*55))
-                rect = self.rects[i]
-                pygame.draw.rect(superficie,ui.CARD,rect)
-                pygame.draw.rect(superficie,ui.ACCENT if i==self.activo else ui.BORDER,rect,2)
-                superficie.blit(fuente.render(self.campos[i],True,(255,255,255)),(rect.x+10,rect.y+9))
-            pygame.draw.rect(superficie,(55,88,64),self.confirmar,border_radius=4)
-            superficie.blit(fuente.render("Visualizar",True,(255,255,255)),(320,310))
+            self.dibujar_config(s, mouse)
         else:
-            x,y,w,h = self.region
-            pygame.draw.rect(superficie,(55,88,64),self.volver,border_radius=4)
-            superficie.blit(fuente.render("Cambiar region",True,(255,255,255)),(30,23))
-            textos = [(f"Origen: ({x}, {y}) | Region: {w} x {h} | Nodos: {self.nodos:,} | Aristas: {self.aristas:,}",(15,60)),
-                      ("Azul: nodos validos | Rojo: conexiones internas | Fondo: mapa original",(15,82)),
-                      ("Coordenadas: X crece a la derecha; Y hacia abajo. ESC cierra solo esta ventana.",(15,815))]
-            superficie.blit(self.presentacion,((960-self.presentacion.get_width())//2,105))
-        for texto,pos in textos:
-            superficie.blit(fuente.render(texto,True,ui.TEXT),pos)
+            self.dibujar_resultado(s, mouse)
         self.ventana.flip()
+
+    def dibujar_config(self, s, mouse):
+        filas, columnas = matriz_posiciones_validas.shape
+        ui.text(s, "Subgrafo del mapa", (28, 24), size=24, bold=True)
+        ui.text(s, "Elige una región para ver sus nodos válidos y las conexiones entre ellos.", (28, 58), ui.MUTED, 13)
+        ui.etiqueta_seccion(s, 28, 100, "Región (coordenadas del mapa)")
+        nombres = ("X inicial (columna)", "Y inicial (fila)", "Ancho", "Alto")
+        for i, (nombre, rect) in enumerate(zip(nombres, self.rects)):
+            ui.text(s, nombre, (rect.x, rect.y - 22), ui.MUTED, 13)
+            ui.box(s, rect, ui.CARD, 9, ui.ACCENT if i == self.activo else ui.BORDER)
+            if i == self.activo:
+                pygame.draw.rect(s, ui.ACCENT, rect, 2, border_radius=9)
+            ui.text(s, self.campos[i], (rect.x + 14, rect.y + 9), ui.TEXT, 16, True)
+        ui.text(s, f"El mapa mide {columnas} × {filas} nodos. La región debe quedar dentro.", (28, 318), ui.MUTED, 12)
+        for rect, label in ((self.btn_vista, "Centrar en la vista"), (self.btn_npc, "Centrar en el NPC")):
+            ui.button(s, rect, label, hover=rect.collidepoint(mouse))
+        ui.button(s, self.confirmar, "Visualizar", primary=True, hover=self.confirmar.collidepoint(mouse))
+        if self.error:
+            caja = pygame.Rect(28, 456, 584, 40)
+            ui.box(s, caja, (44, 26, 26), 9, ui.DANGER)
+            ui.text(s, self.error, (caja.x + 14, caja.y + 11), ui.DANGER, 13, width=caja.w - 28)
+        ui.text(s, "Clic o TAB: cambiar de campo  ·  Escribir: valor  ·  Enter: visualizar  ·  Esc: cerrar",
+                (28, 520), ui.MUTED, 12)
+
+    def dibujar_resultado(self, s, mouse):
+        x, y, w, h = self.region
+        ui.text(s, "Subgrafo del mapa", (28, 18), size=24, bold=True)
+        ui.text(s, "Nodos válidos y conexiones de la región elegida", (28, 50), ui.MUTED, 13)
+        ui.button(s, self.volver, "Cambiar región", hover=self.volver.collidepoint(mouse))
+        tarjetas = (("Origen", f"({x}, {y})"), ("Región", f"{w} × {h}"),
+                    ("Nodos válidos", f"{self.nodos:,}"), ("Conexiones", f"{self.aristas:,}"))
+        ancho = (960 - 56 - 36) // 4
+        for i, (etiqueta, valor) in enumerate(tarjetas):
+            r = pygame.Rect(28 + i * (ancho + 12), 84, ancho, 52)
+            ui.box(s, r, ui.CARD, 10)
+            ui.text(s, etiqueta, (r.x + 14, r.y + 6), ui.MUTED, 11)
+            ui.text(s, valor, (r.x + 14, r.y + 22), ui.TEXT, 18, True)
+        cx = 28
+        pygame.draw.circle(s, (25, 90, 255), (cx + 6, 156), 5)
+        ui.text(s, "Nodo válido", (cx + 20, 147), ui.TEXT, 12)
+        pygame.draw.line(s, (245, 35, 35), (cx + 130, 156), (cx + 154, 156), 3)
+        ui.text(s, "Conexión entre vecinos", (cx + 162, 147), ui.TEXT, 12)
+        ui.text(s, "Fondo: mapa original", (cx + 340, 147), ui.MUTED, 12)
+        marco = pygame.Rect(28, 176, 904, 716)
+        ui.box(s, marco, (10, 20, 18), 12)
+        s.blit(self.presentacion, self.presentacion.get_rect(center=marco.center))
+        ui.text(s, "X crece a la derecha y Y hacia abajo.  Esc cierra solo esta ventana.", (28, 898), ui.MUTED, 12)
 
     def evento(self, evento):
         if evento.type == pygame.WINDOWCLOSE or (evento.type == pygame.KEYDOWN and evento.key == pygame.K_ESCAPE):
@@ -953,35 +1053,39 @@ pygame.quit()."""
         if evento.type == pygame.WINDOWEXPOSED:
             self.dibujar()
         if self.imagen is not None:
-            if evento.type == pygame.MOUSEBUTTONDOWN and evento.button==1 and self.volver.collidepoint(evento.pos):
+            if evento.type == pygame.MOUSEBUTTONDOWN and evento.button == 1 and self.volver.collidepoint(evento.pos):
                 self.imagen = None
                 self.error = ""
-                self.ventana.size = (700,430)
-                self.ventana.title = "Configurar subgrafo"
-                self.dibujar()
+                self.ventana.size = self.TAM_CONFIG
+                self.ventana.title = "Subgrafo del mapa"
+            self.dibujar()
             return True
-        if evento.type == pygame.MOUSEBUTTONDOWN and evento.button==1:
-            for i,rect in enumerate(self.rects):
+        if evento.type == pygame.MOUSEBUTTONDOWN and evento.button == 1:
+            for i, rect in enumerate(self.rects):
                 if rect.collidepoint(evento.pos):
                     self.activo, self.reemplazar = i, True
-            if self.confirmar.collidepoint(evento.pos):
+            if self.btn_vista.collidepoint(evento.pos):
+                self.centrar_en_vista()
+            elif self.btn_npc.collidepoint(evento.pos):
+                self.centrar_en_npc()
+            elif self.confirmar.collidepoint(evento.pos):
                 self.generar()
                 return True
         if evento.type == pygame.KEYDOWN:
-            if evento.key in (pygame.K_RETURN,pygame.K_KP_ENTER):
+            if evento.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
                 self.generar()
                 return True
             if evento.key == pygame.K_TAB:
-                self.activo = (self.activo+(-1 if evento.mod & pygame.KMOD_SHIFT else 1)) % 4
+                self.activo = (self.activo + (-1 if evento.mod & pygame.KMOD_SHIFT else 1)) % 4
                 self.reemplazar = True
             elif evento.key == pygame.K_BACKSPACE:
                 self.campos[self.activo] = "" if self.reemplazar else self.campos[self.activo][:-1]
                 self.reemplazar = False
             else:
-                caracter = getattr(evento,"unicode","")
+                caracter = getattr(evento, "unicode", "")
                 if caracter and caracter.isascii() and caracter.isdigit():
                     valor = "" if self.reemplazar else self.campos[self.activo]
-                    self.campos[self.activo] = (valor+caracter)[:6]
+                    self.campos[self.activo] = (valor + caracter)[:6]
                     self.reemplazar = False
         self.dibujar()
         return True
@@ -990,6 +1094,7 @@ pygame.quit()."""
 visualizador_subgrafo = None
 # Permite identificar eventos de la ventana principal sin recrearla.
 ventana_principal = pygame.Window.from_display_module()
+ventana_principal.minimum_size = (min(640, ANCHO), min(400, ALTO))
 
 
 def abrir_subgrafo():
@@ -1108,25 +1213,20 @@ def registrar_cambio_mapa(info, rescalar=True):
 
 
 def limpiar_mundo_dinamico():
-    global descartada_escalada
     cambios = gestor_obstaculos.limpiar()
     for c in cambios:
         registrar_cambio_mapa(c, rescalar=False)
     if cambios and mostrar_posiciones_validas:
         actualizar_vista()
     efectos_aparicion.clear()
-    capa_descartada.fill((0, 0, 0, 0))
-    descartada_escalada = None
+    rutas_descartadas.clear()
 
 
 def instalar_ruta(ruta):
-    global ruta_encontrada, ruta_np, ruta_escalada
+    global ruta_encontrada, ruta_np, ruta_vertices
     ruta_encontrada = ruta
     ruta_np = np.array(ruta, dtype=np.intp).reshape(-1, 2)
-    capa_ruta.fill((0, 0, 0, 0))
-    for nodo in ruta:
-        capa_ruta.set_at(nodo, (255, 225, 0, 255))
-    ruta_escalada = None
+    ruta_vertices = vertices_ortogonales(ruta)
 
 
 def restaurar_escenario_inicial():
@@ -1241,7 +1341,7 @@ def iniciar_replanificacion(obstaculo, indice_bloqueo):
 
 def finalizar_replanificacion(resultado):
     global replan_actual, pausa_replan, animando, mensaje, indice_ruta
-    global progreso_visual, descartada_escalada
+    global progreso_visual
     actualizar_reloj_recorrido()
     info = replan_actual
     replan_actual = None
@@ -1258,10 +1358,14 @@ def finalizar_replanificacion(resultado):
         longitud_nueva=(len(ruta) - 1) if exito else None, resultado="")
     if exito:
         nueva = set(ruta)
+        tramo = []                      # tramos contiguos de la ruta vieja que ya no se usan
         for nodo in info["ruta_vieja"]:
             if nodo not in nueva:
-                capa_descartada.set_at(nodo, (255, 110, 20, 235))
-        descartada_escalada = None
+                tramo.append(nodo)
+            elif tramo:
+                rutas_descartadas.append(vertices_ortogonales(tramo)); tramo = []
+        if tramo:
+            rutas_descartadas.append(vertices_ortogonales(tramo))
         registrar_ruta(sesion, len(ruta) - 1, resultado["tiempo"])
         instalar_ruta(ruta)
         indice_ruta = 0
@@ -1319,7 +1423,7 @@ def dibujar_obstaculos(delante):
     if not gestor_obstaculos.obstaculos:
         return
     pie = centro_hitbox()[1] if inicio_busqueda is not None else -1
-    visible = pygame.Rect(0, 0, ANCHO, ALTO - PANEL)
+    visible = pygame.Rect(0, 0, ANCHO_VISTA, ALTO_VISTA)
     for o in gestor_obstaculos.obstaculos:
         if ((o.y + o.alto) > pie) != delante:
             continue
@@ -1382,7 +1486,7 @@ def generador_comparacion(inicio, destino):
 
 def iniciar_comparacion():
     global comparando, tarea_comparacion, animando, ruta_encontrada
-    global ruta_escalada, mensaje, pausa_replan, replan_actual, contexto_comparacion, numero_comparacion, resultados_comparacion
+    global mensaje, pausa_replan, replan_actual, contexto_comparacion, numero_comparacion, resultados_comparacion
     if preparacion_alt is not None or inicio_busqueda is None or destino_busqueda is None or comparando or tarea_busqueda is not None:
         return
     interrumpir_recorrido("Interrumpido por comparacion")
@@ -1391,8 +1495,6 @@ def iniciar_comparacion():
     limpiar_mundo_dinamico()
     ubicar_en_inicio()
     ruta_encontrada = None
-    capa_ruta.fill((0, 0, 0, 0))
-    ruta_escalada = None
     resultados_comparacion = []  # Cada comparacion conserva su propia lista.
     numero_comparacion += 1
     contexto_comparacion = dict(id=numero_comparacion, inicio=inicio_busqueda, destino=destino_busqueda,
@@ -1526,64 +1628,122 @@ class VentanaInforme:
             self.scroll = 0
         self.aviso = ""
 
+    FILAS_VISIBLES = 20
+
+    @staticmethod
+    def formato(valor):
+        if isinstance(valor, bool): return str(valor)
+        if isinstance(valor, int): return f"{valor:,}"
+        if isinstance(valor, float): return f"{valor:.6f}"
+        return acentuar(valor)
+
     def dibujar(self):
-        sup=self.ventana.get_surface();sup.fill(ui.BG)
-        ui.text(sup,"Resultados",(26,18),size=27,bold=True)
-        ui.text(sup,"NPC PATHFINDER / ANALISIS",(26,55),ui.MUTED,11,True)
-        self.acciones_ui = {pygame.K_i: pygame.Rect(435,24,150,36),
-                            pygame.K_c: pygame.Rect(595,24,150,36),
-                            pygame.K_s: pygame.Rect(755,24,140,36),
-                            pygame.K_LEFT: pygame.Rect(915,24,80,36),
-                            pygame.K_RIGHT: pygame.Rect(1005,24,80,36)}
-        for key,rect in self.acciones_ui.items():
-            label={pygame.K_i:"Individual",pygame.K_c:"Comparacion",pygame.K_s:"Exportar CSV",
-                   pygame.K_LEFT:"Anterior",pygame.K_RIGHT:"Siguiente"}[key]
+        sup = self.ventana.get_surface(); sup.fill(ui.BG)
+        mouse = pygame.mouse.get_pos()
+        ui.text(sup, "Resultados", (26, 18), size=27, bold=True)
+        ui.text(sup, "NPC PATHFINDER / ANÁLISIS", (26, 55), ui.MUTED, 11, True)
+        self.acciones_ui = {pygame.K_i: pygame.Rect(435, 24, 150, 36),
+                            pygame.K_c: pygame.Rect(595, 24, 150, 36),
+                            pygame.K_s: pygame.Rect(755, 24, 140, 36),
+                            pygame.K_LEFT: pygame.Rect(915, 24, 80, 36),
+                            pygame.K_RIGHT: pygame.Rect(1005, 24, 80, 36)}
+        for key, rect in self.acciones_ui.items():
+            label = {pygame.K_i: "Individual", pygame.K_c: "Comparación", pygame.K_s: "Exportar CSV",
+                     pygame.K_LEFT: "Anterior", pygame.K_RIGHT: "Siguiente"}[key]
             habilitado = (self.navegacion_habilitada(-1) if key == pygame.K_LEFT else
                           self.navegacion_habilitada(1) if key == pygame.K_RIGHT else True)
-            ui.button(sup,rect,label,enabled=habilitado,primary=key==pygame.K_s,
-                      active=(key==pygame.K_c and self.comparacion) or (key==pygame.K_i and not self.comparacion))
+            ui.button(sup, rect, label, enabled=habilitado, primary=key == pygame.K_s,
+                      active=(key == pygame.K_c and self.comparacion) or (key == pygame.K_i and not self.comparacion),
+                      hover=habilitado and rect.collidepoint(mouse))
         if self.comparacion:
-            registro = self.comparacion_seleccionada() or {}
-            ui.text(sup,f"COMPARACION {registro.get('id', '--')}  /  {registro.get('estado','Sin ejecutar')}",(26,100),ui.ACCENT,13,True)
-            ui.text(sup,f"Inicio {registro.get('inicio')}   -   Destino {registro.get('destino')}",(26,129),ui.MUTED)
-            xs=(42,280,540,800)
-            ui.box(sup,pygame.Rect(26,175,1060,44))
-            for x,t in zip(xs,("ALGORITMO","TIEMPO DE BUSQUEDA","NODOS EXPLORADOS","NODOS DE LA RUTA")):
-                ui.text(sup,t,(x,190),ui.MUTED,12,True)
-            for i,r in enumerate(registro.get("resultados", [])):
-                y=231+i*68
-                ui.box(sup,pygame.Rect(26,y,1060,58))
-                for x,v in zip(xs,(r['algoritmo'],f"{r['tiempo']:.6f} s",f"{r['expandidos']:,}",
-                                   "Sin ruta" if r['nodos_ruta'] is None else f"{r['nodos_ruta']:,}")):
-                    ui.text(sup,v,(x,y+17),size=18,bold=True)
-            ui.text(sup,"Explorados = expansiones. En BFS Bidireccional se suman ambos extremos.",(26,610),ui.MUTED,13)
-            ui.text(sup,f"ALT: preparacion compartida {registro.get('preparacion_alt_s', 0):.3f} s, excluida de las busquedas.",(26,637),ui.MUTED,13)
+            self.dibujar_comparacion(sup)
         else:
-            ses=historial_sesiones[self.indice] if historial_sesiones else None
-            filas=filas_informe(ses)
-            self.scroll=min(self.scroll,max(0,len(filas)-23))
-            for i,(nombre,valor) in enumerate(filas[self.scroll:self.scroll+23]):
-                y=91+i*25
-                section=nombre[:2] in ('A.','B.','C.','D.')
-                if section:
-                    pygame.draw.rect(sup,ui.CARD,(26,y-2,1060,24),border_radius=5)
-                elif i%2==0:
-                    pygame.draw.rect(sup,(18,30,27),(26,y-2,1060,24),border_radius=3)
-                ui.text(sup,nombre,(38,y),ui.ACCENT if section else ui.MUTED,14,section)
-                if isinstance(valor, tuple):
-                    nodos, tiempo = valor
-                    ui.text(sup,nodos,(540,y),ui.TEXT,13,True,width=300)
-                    ui.text(sup,f"{tiempo:.6f} s" if isinstance(tiempo,float) else tiempo,
-                            (865,y),ui.TEXT,13,True,width=215)
-                else:
-                    ui.text(sup,f"{valor:.6f}" if isinstance(valor,float) else valor,(610,y),size=14,bold=True,width=460)
-            ui.text(sup,"Rueda para ver todas las rutas. Anterior / Siguiente cambia de ejecucion.",(26,690),ui.MUTED,13)
-        self.iniciar_comparacion_rect = pygame.Rect(866,679,220,38)
+            self.dibujar_individual(sup)
+        self.iniciar_comparacion_rect = pygame.Rect(866, 679, 220, 38)
         if self.comparacion:
-            ui.button(sup,self.iniciar_comparacion_rect,"Iniciar comparacion",
-                      enabled=boton_habilitado("Comparar busquedas"),primary=True)
-        ui.text(sup,self.aviso or "S: exportar   /   ESC: cerrar esta ventana",(26,729),ui.MUTED,13,width=1060)
+            ui.button(sup, self.iniciar_comparacion_rect, "Iniciar comparación",
+                      enabled=boton_habilitado("Comparar busquedas"), primary=True,
+                      hover=self.iniciar_comparacion_rect.collidepoint(mouse))
+        ui.text(sup, acentuar(self.aviso) or "S: exportar   /   Esc: cerrar esta ventana", (26, 729), ui.MUTED, 13, width=1060)
         self.ventana.flip()
+
+    def dibujar_comparacion(self, sup):
+        registro = self.comparacion_seleccionada() or {}
+        ui.text(sup, f"COMPARACIÓN {registro.get('id', '--')}  /  {acentuar(registro.get('estado', 'Sin ejecutar'))}", (26, 100), ui.ACCENT, 13, True)
+        ui.text(sup, f"Inicio {registro.get('inicio')}   -   Destino {registro.get('destino')}", (26, 129), ui.MUTED)
+        xs = (42, 280, 540, 800)
+        ui.box(sup, pygame.Rect(26, 175, 1060, 44))
+        for x, t in zip(xs, ("ALGORITMO", "TIEMPO DE BÚSQUEDA", "NODOS EXPLORADOS", "NODOS DE LA RUTA")):
+            ui.text(sup, t, (x, 190), ui.MUTED, 12, True)
+        resultados = registro.get("resultados", [])
+        con_tiempo = [r for r in resultados if r.get("nodos_ruta") is not None]
+        mejor_t = min((r["tiempo"] for r in con_tiempo), default=None)
+        mejor_n = min((r["expandidos"] for r in con_tiempo), default=None)
+        mejor_l = min((r["nodos_ruta"] for r in con_tiempo), default=None)
+        max_t = max((r["tiempo"] for r in resultados), default=1) or 1e-9
+        max_n = max((r["expandidos"] for r in resultados), default=1) or 1
+        for i, r in enumerate(resultados):
+            y = 231 + i * 68
+            ui.box(sup, pygame.Rect(26, y, 1060, 58))
+            ui.text(sup, r["algoritmo"], (xs[0], y + 12), size=18, bold=True)
+            ui.text(sup, f"{r['tiempo']:.6f} s", (xs[1], y + 12), size=18, bold=True)
+            ui.text(sup, f"{r['expandidos']:,}", (xs[2], y + 12), size=18, bold=True)
+            ui.text(sup, "Sin ruta" if r["nodos_ruta"] is None else f"{r['nodos_ruta']:,}", (xs[3], y + 12), size=18, bold=True)
+            for x, frac, mejor in ((xs[1], r["tiempo"] / max_t, mejor_t is not None and len(con_tiempo) > 1 and r["tiempo"] == mejor_t),
+                                    (xs[2], r["expandidos"] / max_n, mejor_n is not None and len(con_tiempo) > 1 and r["expandidos"] == mejor_n)):
+                pygame.draw.rect(sup, ui.BORDER, (x, y + 43, 200, 5), border_radius=3)
+                pygame.draw.rect(sup, ui.ACCENT if mejor else (90, 126, 104), (x, y + 43, max(6, int(200 * frac)), 5), border_radius=3)
+            if (mejor_l is not None and len(con_tiempo) > 1 and r["nodos_ruta"] == mejor_l
+                    and any(o["nodos_ruta"] not in (None, mejor_l) for o in resultados)):
+                ui.pastilla(sup, pygame.Rect(xs[3] + 84, y + 14, 96, 20), "Ruta más corta", ui.ACCENT, 10)
+            if mejor_t is not None and len(con_tiempo) > 1 and r["tiempo"] == mejor_t and r["nodos_ruta"] is not None:
+                ui.pastilla(sup, pygame.Rect(xs[1] + 128, y + 14, 78, 20), "Más rápido", ui.ACCENT, 10)
+            if mejor_n is not None and len(con_tiempo) > 1 and r["expandidos"] == mejor_n and r["nodos_ruta"] is not None:
+                ui.pastilla(sup, pygame.Rect(xs[2] + 128, y + 14, 84, 20), "Menos nodos", ui.ACCENT, 10)
+        ui.text(sup, "Explorados = expansiones. En BFS Bidireccional se suman ambos extremos.", (26, 610), ui.MUTED, 13)
+        ui.text(sup, f"ALT: preparación compartida {registro.get('preparacion_alt_s', 0):.3f} s, excluida de las búsquedas.", (26, 637), ui.MUTED, 13)
+
+    def dibujar_individual(self, sup):
+        ses = historial_sesiones[self.indice] if historial_sesiones else None
+        if ses is None:
+            ui.box(sup, pygame.Rect(26, 100, 1060, 120))
+            ui.text(sup, "Todavía no hay ejecuciones.", (56, 132), ui.TEXT, 18, True)
+            ui.text(sup, "Ejecuta una búsqueda en la ventana principal y vuelve aquí para ver el resultado.", (56, 164), ui.MUTED, 14)
+            return
+        ini = ses["inicial"]
+        tarjetas = (("Algoritmo", ses["algoritmo"]),
+                    ("Búsqueda inicial", "--" if ini is None else f"{ini['tiempo']:.4f} s"),
+                    ("Nodos expandidos", "--" if ini is None else f"{ini['expandidos']:,}"),
+                    ("Rutas creadas", str(len(ses["rutas"]))))
+        for i, (etiqueta, valor) in enumerate(tarjetas):
+            r = pygame.Rect(26 + i * 268, 88, 256, 58)
+            ui.box(sup, r, ui.CARD, 10)
+            ui.text(sup, etiqueta, (r.x + 14, r.y + 7), ui.MUTED, 11)
+            ui.text(sup, valor, (r.x + 14, r.y + 25), ui.TEXT, 18, True, width=r.w - 28)
+        filas = filas_informe(ses)
+        visibles = self.FILAS_VISIBLES
+        self.scroll = min(self.scroll, max(0, len(filas) - visibles))
+        for i, (nombre, valor) in enumerate(filas[self.scroll:self.scroll + visibles]):
+            y = 162 + i * 25
+            seccion = nombre[:2] in ("A.", "B.", "C.", "D.")
+            if seccion:
+                pygame.draw.rect(sup, ui.CARD, (26, y - 2, 1048, 24), border_radius=5)
+            elif i % 2 == 0:
+                pygame.draw.rect(sup, (18, 30, 27), (26, y - 2, 1048, 24), border_radius=3)
+            ui.text(sup, acentuar(nombre), (38, y), ui.ACCENT if seccion else ui.MUTED, 14, seccion)
+            if isinstance(valor, tuple):
+                nodos, tiempo = valor
+                ui.text(sup, self.formato(nodos), (540, y), ui.TEXT, 13, True, width=300)
+                ui.text(sup, f"{tiempo:.6f} s" if isinstance(tiempo, float) else acentuar(tiempo), (865, y), ui.TEXT, 13, True, width=205)
+            else:
+                ui.text(sup, self.formato(valor), (610, y), size=14, bold=True, width=450)
+        if len(filas) > visibles:
+            pista = pygame.Rect(1082, 160, 6, visibles * 25 - 4)
+            pygame.draw.rect(sup, ui.BORDER, pista, border_radius=3)
+            alto = max(24, int(pista.h * visibles / len(filas)))
+            y0 = pista.y + int((pista.h - alto) * self.scroll / max(1, len(filas) - visibles))
+            pygame.draw.rect(sup, ui.ACCENT, (pista.x, y0, pista.w, alto), border_radius=3)
+        ui.text(sup, "Rueda del mouse: desplazarse   /   Anterior · Siguiente: cambiar de ejecución", (26, 690), ui.MUTED, 13)
 
     def refrescar(self):
         if pygame.time.get_ticks() - self.ultimo > 500:
@@ -1643,23 +1803,6 @@ def ciclar(opciones, actual):
     return opciones[(opciones.index(actual) + 1) % len(opciones)]
 
 
-def etiqueta_boton(nombre):
-    return {
-        "Obstaculos auto": f"Auto: {'ON' if aparicion_auto else 'OFF'} (P)",
-        "Obstaculo ahora": "Obstaculo ahora (Q)",
-        "Limpiar obstaculos": "Limpiar obstaculos (X)",
-        "Comparar busquedas": "Comparar busquedas (C)",
-        "Zonas bloqueo": f"Zonas bloqueo: {'ON' if mostrar_zonas_bloqueo else 'OFF'} (B)",
-        "Sin ruta": f"Sin ruta: {cfg_sin_ruta}",
-        "Tamano": f"Tamano: {cfg_tamano}",
-        "Cada -": "Cada -50", "Cada +": "Cada +50",
-        "Max -": "Max -1", "Max +": "Max +1",
-        "Detec -": "Deteccion -5", "Detec +": "Deteccion +5",
-        "Semilla": f"Semilla: {cfg_semilla} (N)",
-        "Informe": "Informe (I)",
-    }.get(nombre, nombre)
-
-
 def boton_habilitado(nombre):
     if nombre in ("Reiniciar", "Visualizar subgrafo", "Informe", "Obstaculos auto",
                   "Zonas bloqueo", "Tamano", "Sin ruta", "Cada -", "Cada +",
@@ -1713,27 +1856,84 @@ def limpiar_obstaculos_manual():
         mensaje = "Obstaculos dinamicos retirados. Mapa limpio."
 
 
+def alternar_binaria():
+    global modo, modo_anterior_binario
+    if modo == 3:
+        modo = modo_anterior_binario
+    else:
+        modo_anterior_binario = modo
+        modo = 3
+    actualizar_vista()
+
+
+def alternar_validas():
+    global mostrar_posiciones_validas
+    mostrar_posiciones_validas = not mostrar_posiciones_validas
+    actualizar_vista()
+
+
+def alternar_hitbox():
+    global mostrar_hitbox_pies
+    mostrar_hitbox_pies = not mostrar_hitbox_pies
+
+
+def alternar_zonas():
+    global mostrar_zonas_bloqueo
+    mostrar_zonas_bloqueo = not mostrar_zonas_bloqueo
+
+
 def accion_interfaz(nombre):
+    """Despacha las acciones de la barra lateral y de la ventana de configuracion."""
     global algoritmo_seleccionado
-    if nombre == "Algoritmo":
-        algoritmo_seleccionado = ciclar(ALGORITMOS_DISPONIBLES, algoritmo_seleccionado)
-    elif nombre == "Ejecutar busqueda": ejecutar_busqueda(algoritmo_seleccionado)
-    elif nombre == "Animar recorrido": animar_recorrido()
-    elif nombre == "Visualizar subgrafo": abrir_subgrafo()
-    elif nombre == "Informe": abrir_informe()
-    elif nombre == "Configuracion": abrir_configuracion()
-    elif nombre == "Obstaculo ahora": generar_obstaculo()
-    elif nombre == "Limpiar obstaculos": limpiar_obstaculos_manual()
-    elif nombre == "Comparar busquedas": iniciar_comparacion()
-    elif nombre == "Reiniciar": reiniciar_busqueda()
+    if nombre.startswith("alg:"): algoritmo_seleccionado = ALGORITMOS_DISPONIBLES[int(nombre[4:])]
+    elif nombre in ("ejecutar", "Ejecutar busqueda"): ejecutar_busqueda(algoritmo_seleccionado)
+    elif nombre in ("animar", "Animar recorrido"): animar_recorrido()
+    elif nombre in ("reiniciar", "Reiniciar"): reiniciar_busqueda()
+    elif nombre == "auto": accion_cfg("Obstaculos auto")
+    elif nombre in ("agregar", "Obstaculo ahora"): generar_obstaculo()
+    elif nombre in ("limpiar", "Limpiar obstaculos"): limpiar_obstaculos_manual()
+    elif nombre == "v_binaria": alternar_binaria()
+    elif nombre == "v_validas": alternar_validas()
+    elif nombre == "v_hitbox": alternar_hitbox()
+    elif nombre == "v_zonas": alternar_zonas()
+    elif nombre in ("subgrafo", "Visualizar subgrafo"): abrir_subgrafo()
+    elif nombre in ("comparar", "Comparar busquedas"): iniciar_comparacion()
+    elif nombre in ("informe", "Informe"): abrir_informe()
+    elif nombre in ("config", "Configuracion"): abrir_configuracion()
     else: accion_cfg(nombre)
 
 
 def habilitado_interfaz(nombre):
-    if nombre == "Configuracion": return True
-    if nombre == "Algoritmo": return not (comparando or animando or tarea_busqueda is not None)
-    if nombre == "Ejecutar busqueda": return boton_habilitado("Ejecutar " + algoritmo_seleccionado)
-    return boton_habilitado(nombre)
+    if nombre in ("config", "auto", "v_binaria", "v_validas", "v_hitbox", "v_zonas",
+                  "subgrafo", "informe", "reiniciar"):
+        return True
+    if nombre.startswith("alg:"):
+        return not (comparando or animando or tarea_busqueda is not None)
+    return boton_habilitado({"ejecutar": "Ejecutar busqueda", "animar": "Animar recorrido",
+                             "agregar": "Obstaculo ahora", "limpiar": "Limpiar obstaculos",
+                             "comparar": "Comparar busquedas"}.get(nombre, nombre))
+
+
+def razon_deshabilitado(nombre):
+    """Texto que explica por que un control esta inactivo (se muestra en el tooltip)."""
+    if nombre.startswith("alg:"):
+        return "No se puede cambiar durante una búsqueda o recorrido."
+    if preparacion_alt is not None:
+        return "Espera: se está preparando el mapa."
+    if comparando:
+        return "Hay una comparación en curso."
+    if nombre in ("ejecutar", "comparar"):
+        if inicio_busqueda is None: return "Marca el inicio con un clic en el mapa."
+        if destino_busqueda is None: return "Marca el destino con un segundo clic."
+        return "Hay una búsqueda en curso."
+    if nombre == "animar":
+        if animando: return "El NPC ya está en recorrido."
+        return "Primero ejecuta una búsqueda."
+    if nombre == "agregar":
+        return "Disponible solo durante el recorrido."
+    if nombre == "limpiar":
+        return "Detén el recorrido primero." if animando else "No hay obstáculos activos."
+    return ""
 
 
 def cambiar_configuracion(nombre, valor):
@@ -1744,6 +1944,10 @@ def cambiar_configuracion(nombre, valor):
     elif nombre == "cfg_semilla":
         globals()[nombre] = int(valor)
         gestor_obstaculos.rng.seed(int(valor))
+    elif nombre == "cfg_tamano" and valor in TAMANOS:
+        globals()[nombre] = valor
+    elif nombre == "cfg_sin_ruta" and valor in ("retirar", "detener"):
+        globals()[nombre] = valor
 
 
 def abrir_configuracion():
@@ -1756,52 +1960,84 @@ def abrir_configuracion():
         configuracion_ventana.dibujar()
 
 
-def pulsar_boton(pos):
-    for nombre, rect in botones.items():
-        if rect.collidepoint(pos) and habilitado_interfaz(nombre):
-            accion_interfaz(nombre)
-            return
+def redimensionar_interfaz():
+    """Conserva el centro del mundo y el zoom al cambiar el viewport."""
+    global ANCHO, ALTO, ANCHO_VISTA, ALTO_VISTA, pantalla, zoom_minimo
+    global desplazamiento_x, desplazamiento_y, arrastrando, clic_inicial
+    anterior_ancho, anterior_alto = ANCHO_VISTA, ALTO_VISTA
+    pantalla = pygame.display.get_surface()
+    ANCHO, ALTO = pantalla.get_size()
+    ANCHO_VISTA, ALTO_VISTA = max(1, ANCHO - ANCHO_LATERAL), ALTO
+    desplazamiento_x += (ANCHO_VISTA - anterior_ancho) / 2
+    desplazamiento_y += (ALTO_VISTA - anterior_alto) / 2
+    zoom_minimo = min(ANCHO_VISTA / ancho_mapa, ALTO_VISTA / alto_mapa)
+    barra.redimensionar(ANCHO_VISTA, ALTO)
+    arrastrando, clic_inicial = False, None
 
 
-def dibujar_panel():
-    y = ALTO - PANEL
-    pygame.draw.rect(pantalla,ui.PANEL,(0,y,ANCHO,PANEL))
-    pygame.draw.line(pantalla,ui.BORDER,(0,y),(ANCHO,y),1)
-    ui.text(pantalla,"NPC / PATHFINDER",(22,y+12),ui.ACCENT,16,True)
-    estado = ("Preparando mapa" if preparacion_alt is not None else "Comparando" if comparando else "Replanificando" if pausa_replan else
-              "En recorrido" if animando else estadisticas.get("estado","Selecciona inicio y destino"))
-    ui.text(pantalla,estado,(ANCHO-365,y+13),ui.MUTED,14,width=340)
-    mouse=pygame.mouse.get_pos()
-    for nombre,rect in botones.items():
-        label = algoritmo_seleccionado + "  >" if nombre=="Algoritmo" else nombre
-        if nombre == "Configuracion":
-            ui.boton_configuracion(pantalla,rect,hover=rect.collidepoint(mouse))
-        else:
-            ui.button(pantalla,rect,label,habilitado_interfaz(nombre),
-                      primary=nombre=="Ejecutar busqueda",hover=rect.collidepoint(mouse))
-    ui.text(pantalla,"BUSQUEDA  /  " + algoritmo_seleccionado,(22,y+105),ui.MUTED,11,True)
-    ui.text(pantalla,"NAVEGACION" + ("  /  " + sesion["algoritmo"] if sesion["algoritmo"] else ""),(610,y+105),ui.MUTED,11,True)
-    ini=sesion.get("inicial")
-    # El reloj del recorrido ya incluye las pausas de replanificacion.
-    # Solo se suma la busqueda inicial, previa a pulsar Animar recorrido.
+def estado_ui():
+    """Instantanea del estado para la barra lateral (no contiene logica)."""
+    ini = sesion.get("inicial")
+    tiene_puntos = inicio_busqueda is not None and destino_busqueda is not None
+    ruta_lista = ruta_encontrada is not None
+    terminado = (not animando) and sesion.get("resultado") == "Destino alcanzado"
+    if preparacion_alt is not None: clave, texto = "preparando", "Preparando el mapa"
+    elif comparando: clave, texto = "comparando", "Comparando algoritmos"
+    elif pausa_replan: clave, texto = "replanificando", "Replanificando ruta"
+    elif tarea_busqueda is not None: clave, texto = "buscando", "Buscando ruta"
+    elif animando: clave, texto = "recorriendo", "En recorrido"
+    elif estadisticas.get("estado") == "Sin camino": clave, texto = "sin_ruta", "Sin camino"
+    elif terminado: clave, texto = "completado", "Destino alcanzado"
+    elif ruta_lista: clave, texto = "listo", "Ruta lista"
+    elif tiene_puntos: clave, texto = "listo", "Puntos marcados"
+    else: clave, texto = "espera", "Selecciona inicio y destino"
+    pasos = ("hecho" if tiene_puntos else "activo",
+             "hecho" if ruta_lista else ("activo" if tiene_puntos else "pendiente"),
+             "hecho" if terminado else ("activo" if (ruta_lista or animando) else "pendiente"))
     tiempo_inicial = ini["tiempo"] if ini is not None else estadisticas.get("tiempo", 0.0)
-    tiempo_total = tiempo_inicial + sesion["t_total"]
-    valores=[("Tiempo de busqueda",f"{estadisticas.get('tiempo',0):.4f} s"),
-             ("Nodos explorados",f"{estadisticas.get('expandidos',0):,}"),
-             ("Ruta inicial / movimientos","--" if ini is None or ini['longitud'] is None else f"{ini['longitud']:,}"),
-             ("Movimientos realizados",f"{sesion['pasos']:,}"),
-             ("Rutas creadas",len(sesion['rutas'])),("Tiempo total",f"{tiempo_total:.2f} s")]
-    if estadisticas.get('algoritmo') != algoritmo_seleccionado:
-        valores[:3]=[(label,"--") for label,_ in valores[:3]]
+    busqueda = [("Tiempo de búsqueda", f"{estadisticas.get('tiempo', 0):.4f} s"),
+                ("Nodos explorados", f"{estadisticas.get('expandidos', 0):,}"),
+                ("Ruta inicial", "--" if ini is None or ini["longitud"] is None else f"{ini['longitud']:,}")]
+    if estadisticas.get("algoritmo") != algoritmo_seleccionado:
+        busqueda = [(l, "--") for l, _ in busqueda]
+    navegacion = [("Movimientos", f"{sesion['pasos']:,}"), ("Rutas creadas", str(len(sesion["rutas"]))),
+                  ("Tiempo total", f"{tiempo_inicial + sesion['t_total']:.2f} s")]
     if comparando:
-        valores=[(label,"--") for label,_ in valores]
-    for i,(label,value) in enumerate(valores):
-        x=22+i*194+(6 if i>=3 else 0)
-        ui.box(pantalla,pygame.Rect(x,y+124,182,74))
-        ui.text(pantalla,label,(x+12,y+134),ui.MUTED,11)
-        ui.text(pantalla,value,(x+12,y+153),ui.TEXT,24,True)
+        busqueda = [(l, "--") for l, _ in busqueda]; navegacion = [(l, "--") for l, _ in navegacion]
+    return dict(algoritmos=ALGORITMOS_DISPONIBLES, alg_sel=algoritmo_seleccionado,
+                estado_clave=clave, estado_texto=texto, mensaje=acentuar(mensaje), pasos=pasos,
+                auto=aparicion_auto, activos=len(gestor_obstaculos.obstaculos),
+                generados=sesion["obstaculos"], replans=sesion["replans"],
+                vistas=dict(binaria=modo == 3, validas=mostrar_posiciones_validas,
+                            hitbox=mostrar_hitbox_pies, zonas=mostrar_zonas_bloqueo),
+                titulo_busqueda="Búsqueda", titulo_navegacion="Navegación",
+                metricas_busqueda=busqueda, metricas_navegacion=navegacion)
 
 
+def dibujar_superposiciones():
+    """Elementos flotantes del visor: estado ocupado, leyenda y ayuda."""
+    vista = pygame.Rect(0, 0, ANCHO_VISTA, ALTO_VISTA)
+    pantalla.set_clip(vista)
+    t = pygame.time.get_ticks() / 1000
+    if preparacion_alt is not None: ui.banner(pantalla, vista, "Preparando el mapa", acentuar(mensaje), ui.AMBER, t)
+    elif comparando: ui.banner(pantalla, vista, "Comparando algoritmos", acentuar(mensaje), ui.BLUE, t)
+    elif pausa_replan:
+        ui.banner(pantalla, vista, f"Replanificando con {algoritmo_activo}",
+                  f"{estadisticas.get('expandidos', 0):,} nodos explorados", ui.AMBER, t)
+    elif tarea_busqueda is not None:
+        ui.banner(pantalla, vista, "Buscando ruta", f"{estadisticas.get('expandidos', 0):,} nodos explorados", ui.BLUE, t)
+    items = []
+    if ruta_encontrada is not None: items.append(((255, 214, 64), "Ruta", "linea"))
+    if len(rastro_puntos) > 1: items.append(((255, 96, 84), "Recorrido", "linea"))
+    if rutas_descartadas: items.append(((255, 150, 52), "Ruta descartada", "linea"))
+    if gestor_obstaculos.obstaculos: items.append(((120, 170, 90), "Obstáculo", "caja"))
+    if mostrar_zonas_bloqueo and gestor_obstaculos.obstaculos: items.append(((255, 80, 80), "Zona de bloqueo", "caja"))
+    ui.leyenda(pantalla, vista, items)
+    if not animando:
+        ui.ayuda_visor(pantalla, vista, "Clic: inicio y destino   ·   Arrastrar: mover   ·   Rueda: zoom   ·   R: centrar   ·   F1: atajos")
+    if mostrar_ayuda:
+        ui.panel_atajos(pantalla, vista)
+    pantalla.set_clip(None)
 
 
 inicio_busqueda = destino_busqueda = tarea_busqueda = None
@@ -1811,14 +2047,12 @@ animando = False
 indice_ruta = 0
 acumulado_ruta = 0.0
 mensaje = "Selecciona el inicio con un clic y despues el destino."
-capa_ruta = pygame.Surface((ancho_mapa,alto_mapa),pygame.SRCALPHA)
-capa_ruta.fill((0,0,0,0))
-ruta_escalada = None
+ruta_vertices = []           # esquinas de la ruta vigente (se dibuja como polilinea)
+rutas_descartadas = []       # tramos reemplazados por una replanificacion
+mostrar_ayuda = False
+cursor_mano = False
 
 # --- Estado de obstaculos dinamicos / replanificacion ---
-capa_descartada = pygame.Surface((ancho_mapa,alto_mapa),pygame.SRCALPHA)  # tramos reemplazados
-capa_descartada.fill((0,0,0,0))
-descartada_escalada = None
 ruta_inicial = None          # ruta de la busqueda inicial (para repetir la animacion)
 ruta_np = None               # ruta vigente como array (N,2) para detectar bloqueos
 algoritmo_activo = None
@@ -1847,12 +2081,7 @@ sesion = nueva_sesion(None)
 
 algoritmo_seleccionado = ALGORITMOS_DISPONIBLES[0]
 configuracion_ventana = None
-botones = {}
-_x = 22
-for _nombre,_ancho in (("Algoritmo",150),("Ejecutar busqueda",160),("Animar recorrido",156),
-                      ("Reiniciar",100),("Visualizar subgrafo",164),("Informe",98),("Configuracion",44)):
-    botones[_nombre]=pygame.Rect(_x,ALTO-PANEL+47,_ancho,42)
-    _x += _ancho+10
+barra = ui.BarraLateral(ANCHO_VISTA, ALTO, estado_ui, accion_interfaz, habilitado_interfaz, razon_deshabilitado)
 
 
 clic_inicial = None
@@ -1897,6 +2126,12 @@ while ejecutando:
             continue
         if id_ventana is not None and id_ventana != ventana_principal.id:
             continue  # Evento pendiente de una ventana secundaria ya cerrada.
+        if evento.type in (pygame.WINDOWSIZECHANGED, pygame.VIDEORESIZE):
+            redimensionar_interfaz()
+            continue
+        if evento.type == pygame.MOUSEWHEEL and barra.contiene(pygame.mouse.get_pos()):
+            barra.desplazar(-evento.y * 48)
+            continue
         if evento.type == pygame.WINDOWCLOSE:
             ejecutando = False
             continue
@@ -1924,24 +2159,25 @@ while ejecutando:
                 actualizar_vista()
 
             elif evento.key == pygame.K_g:
-                # G alterna entre la vista actual y la matriz binaria.
-                if modo == 3:
-                    modo = modo_anterior_binario
-                else:
-                    modo_anterior_binario = modo
-                    modo = 3
-                actualizar_vista()
+                alternar_binaria()   # G alterna entre la vista actual y la matriz binaria.
 
             elif evento.key == pygame.K_v:
-                # V conserva el modo anterior al activar/desactivar la vista.
-                mostrar_posiciones_validas = not mostrar_posiciones_validas
-                actualizar_vista()
+                alternar_validas()   # V conserva el modo anterior.
 
             elif evento.key == pygame.K_r and not seguimiento_camara:
                 centrar_mapa()
 
             elif evento.key == pygame.K_h:
-                mostrar_hitbox_pies = not mostrar_hitbox_pies
+                alternar_hitbox()
+
+            elif evento.key in (pygame.K_RETURN, pygame.K_KP_ENTER) and habilitado_interfaz("ejecutar"):
+                ejecutar_busqueda(algoritmo_seleccionado)
+
+            elif evento.key == pygame.K_SPACE and habilitado_interfaz("animar"):
+                animar_recorrido()
+
+            elif evento.key == pygame.K_F1:
+                mostrar_ayuda = not mostrar_ayuda
 
             elif evento.key == pygame.K_q:
                 generar_obstaculo()
@@ -1953,7 +2189,7 @@ while ejecutando:
                 limpiar_obstaculos_manual()
 
             elif evento.key == pygame.K_b:
-                mostrar_zonas_bloqueo = not mostrar_zonas_bloqueo
+                alternar_zonas()
 
             elif evento.key == pygame.K_n:
                 accion_cfg("Semilla")
@@ -1968,7 +2204,7 @@ while ejecutando:
         # ZOOM CON LA RUEDA DEL RATON
         # ----------------------------------------------------
 
-        if evento.type == pygame.MOUSEWHEEL and not seguimiento_camara:
+        if evento.type == pygame.MOUSEWHEEL and not seguimiento_camara and pygame.mouse.get_pos()[0] < ANCHO_VISTA:
 
             mouse_x, mouse_y = pygame.mouse.get_pos()
 
@@ -2005,8 +2241,8 @@ while ejecutando:
         # ----------------------------------------------------
 
         if evento.type == pygame.MOUSEBUTTONDOWN and evento.button == 1:
-            if evento.pos[1] >= ALTO-PANEL:
-                pulsar_boton(evento.pos)
+            if barra.contiene(evento.pos):
+                barra.presionar(evento.pos)
             elif not seguimiento_camara:
                 clic_inicial = evento.pos
                 posicion_anterior = evento.pos
@@ -2020,6 +2256,7 @@ while ejecutando:
                 desplazamiento_y += evento.pos[1]-posicion_anterior[1]
                 posicion_anterior = evento.pos
         if evento.type == pygame.MOUSEBUTTONUP and evento.button == 1:
+            barra.soltar(evento.pos)
             if arrastrando and not hubo_arrastre:
                 seleccionar_punto(evento.pos)
             arrastrando = False
@@ -2051,7 +2288,7 @@ while ejecutando:
     # ========================================================
 
     pantalla.fill(ui.BG)
-    pantalla.set_clip(pygame.Rect(0,0,ANCHO,ALTO-PANEL))
+    pantalla.set_clip(pygame.Rect(0,0,ANCHO_VISTA,ALTO_VISTA))
 
     pantalla.blit(
         mapa_escalado,
@@ -2078,14 +2315,20 @@ while ejecutando:
     dibujar_efectos()
 
     # ========================================================
-    # PANEL INFERIOR
+    # SUPERPOSICIONES DEL VISOR Y BARRA LATERAL
     # ========================================================
 
     pantalla.set_clip(None)
-    if mensaje:
-        ui.box(pantalla,pygame.Rect(20,18,650,34),ui.PANEL,9)
-        ui.text(pantalla,mensaje,(32,26),ui.TEXT,13,width=626)
-    dibujar_panel()
+    dibujar_superposiciones()
+    posicion_mouse = pygame.mouse.get_pos()
+    barra.dibujar(pantalla, posicion_mouse, pygame.time.get_ticks())
+    sobre_boton = barra.mano(posicion_mouse)
+    if sobre_boton != cursor_mano:
+        cursor_mano = sobre_boton
+        try:
+            pygame.mouse.set_cursor(pygame.SYSTEM_CURSOR_HAND if sobre_boton else pygame.SYSTEM_CURSOR_ARROW)
+        except pygame.error:
+            pass
 
     pygame.display.flip()
 
