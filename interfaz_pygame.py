@@ -5,6 +5,7 @@ clics. Todo el estado llega mediante callbacks (estado, accion, habilitado,
 razon), de modo que la aplicacion principal conserva el control.
 """
 import math
+import re
 import pygame
 
 # ---------------------------------------------------------------- tema
@@ -544,6 +545,7 @@ class Configuracion:
             'Obstaculos auto': pygame.Rect(28, 126, 340, 44),
             'Zonas bloqueo': pygame.Rect(390, 126, 340, 44),
             'Limpiar obstaculos': pygame.Rect(390, 184, 340, 40),
+            'Mostrar landmarks': pygame.Rect(28, 184, 340, 40),
         }
         self.sliders = {
             'cfg_cada_pasos': (pygame.Rect(240, 294, 420, 6), 50, 1000, 50, 'Frecuencia (pasos)'),
@@ -572,19 +574,21 @@ class Configuracion:
         s.fill(BG)
         text(s, 'Configuración', (28, 24), size=26, bold=True)
         text(s, 'Ajusta el escenario. Los obstáculos aparecen siempre sobre la ruta.', (28, 63), MUTED)
-        text(s, 'OBSTÁCULOS DINÁMICOS', (28, 99), ACCENT, 12, True)
+        text(s, 'MAPA Y OBSTÁCULOS', (28, 99), ACCENT, 12, True)
         for key, rect in self.controles.items():
             label = {'Obstaculos auto': 'Generación automática', 'Zonas bloqueo': 'Mostrar zonas de bloqueo',
-                     'Limpiar obstaculos': 'Limpiar obstáculos'}[key]
+                     'Limpiar obstaculos': 'Limpiar obstáculos',
+                     'Mostrar landmarks': 'Mostrar landmarks ALT'}[key]
             on = e['aparicion_auto'] if key == 'Obstaculos auto' else e['mostrar_zonas_bloqueo'] if key == 'Zonas bloqueo' else None
+            if key == 'Mostrar landmarks':
+                on = e['mostrar_landmarks']
             if on is None:
                 button(s, rect, label, self.habilitado(key))
             else:
                 box(s, rect)
                 text(s, label, (rect.x + 12, rect.y + 12), size=14)
                 interruptor(s, rect, on)
-        text(s, 'En el mapa, pulsa Q para agregar', (28, 185), ACCENT, 14, True)
-        text(s, 'un obstáculo durante el recorrido.', (28, 207), MUTED, 13)
+        text(s, 'Q: agregar un obstáculo durante el recorrido. Landmarks: referencias de ALT.', (28, 231), MUTED, 12)
         text(s, 'RITMO Y DETECCIÓN', (28, 253), ACCENT, 12, True)
         for key, (r, lo, hi, step, label) in self.sliders.items():
             value = e[key]; x = r.x + round((value - lo) / (hi - lo) * r.w)
@@ -652,3 +656,47 @@ class Configuracion:
         now = pygame.time.get_ticks()
         if now - self.ultimo > 150:
             self.ultimo = now; self.dibujar()
+
+_ACENTOS = {'busqueda': 'búsqueda', 'Busqueda': 'Búsqueda', 'busquedas': 'búsquedas', 'Busquedas': 'Búsquedas', 'despues': 'después', 'replanificacion': 'replanificación', 'Replanificacion': 'Replanificación', 'ejecucion': 'ejecución', 'Ejecucion': 'Ejecución', 'comparacion': 'comparación', 'Comparacion': 'Comparación', 'preparacion': 'preparación', 'Preparacion': 'Preparación', 'valido': 'válido', 'validos': 'válidos', 'validas': 'válidas', 'Posicion': 'Posición', 'Region': 'Región', 'region': 'región', 'dinamicos': 'dinámicos', 'dinamico': 'dinámico', 'Obstaculos': 'Obstáculos', 'obstaculo': 'obstáculo', 'obstaculos': 'obstáculos', 'Arboles': 'Árboles', 'catalogo': 'catálogo', 'estatico': 'estático', 'analisis': 'análisis', 'Analisis': 'Análisis', 'invalidos': 'inválidos', 'camino': 'camino'}
+_PATRON_ACENTOS = re.compile('\\b(' + '|'.join(map(re.escape, _ACENTOS)) + ')\\b')
+
+def acentuar(texto):
+    """Solo para mostrar en pantalla: los mensajes internos y los CSV no cambian."""
+    return _PATRON_ACENTOS.sub(lambda m: _ACENTOS[m.group(0)], str(texto))
+
+
+def dibujar_landmarks(surface, vista, puntos, centros):
+    """Marcadores visuales; puntos reales de ALT y centros de la camara.
+
+    El ancla sigue el zoom; el distintivo mantiene su tamano en pantalla
+    para conservar la legibilidad. No se modifica ninguna matriz.
+    """
+    colores = ((246, 202, 100), (106, 220, 231), (194, 166, 255), (255, 159, 177))
+    for i, ((x, y), centro) in enumerate(zip(puntos, centros)):
+        if not vista.collidepoint(centro):
+            continue
+        cx, cy = centro
+        color = colores[i % len(colores)]
+        halo = pygame.Surface((46, 46), pygame.SRCALPHA)
+        pygame.draw.circle(halo, (*color, 28), (23, 23), 22)
+        pygame.draw.circle(halo, (*color, 65), (23, 23), 15, 1)
+        surface.blit(halo, (cx - 23, cy - 23))
+        pygame.draw.circle(surface, (10, 23, 22), centro, 11)
+        pygame.draw.circle(surface, color, centro, 11, 2)
+        # Brillo en forma de brujula y punto exacto del nodo de referencia.
+        rombo = [(cx, cy - 7), (cx + 4, cy), (cx, cy + 7), (cx - 4, cy)]
+        pygame.draw.polygon(surface, color, rombo)
+        pygame.draw.circle(surface, TEXT, centro, 2)
+        coordenada = f'{x}, {y}'
+        ancho = max(86, font(11).size(coordenada)[0] + 20)
+        etiqueta = pygame.Rect(cx + 18, cy - 22, ancho, 42)
+        if etiqueta.right > vista.right - 8:
+            etiqueta.right = cx - 18
+        etiqueta.clamp_ip(vista.inflate(-16, -16))
+        extremo = (etiqueta.left if etiqueta.centerx >= cx else etiqueta.right,
+                   max(etiqueta.top + 8, min(cy, etiqueta.bottom - 8)))
+        pygame.draw.line(surface, color, centro, extremo, 1)
+        box(surface, etiqueta.move(0, 2), (6, 14, 13), 9, None)
+        box(surface, etiqueta, (18, 31, 29), 9, color)
+        text(surface, f'L{i + 1}  /  ALT', (etiqueta.x + 10, etiqueta.y + 6), color, 12, True)
+        text(surface, coordenada, (etiqueta.x + 10, etiqueta.y + 24), TEXT, 11)
