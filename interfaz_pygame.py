@@ -221,13 +221,17 @@ def leyenda(surface, vista, items):
 
 def ayuda_visor(surface, vista, value):
     f = font(12)
-    img = f.render(value, True, MUTED)
-    r = img.get_rect().inflate(24, 14)
+    # Mantener toda la ayuda y las coordenadas legibles en ventanas pequenas.
+    lineas = ajustar(value, 12, max(1, vista.w - 52), max_lineas=100)
+    imagenes = [f.render(linea, True, MUTED) for linea in lineas]
+    r = pygame.Rect(0, 0, max(img.get_width() for img in imagenes) + 24,
+                    len(imagenes) * f.get_linesize() + 14)
     r.bottomleft = (vista.x + 14, vista.bottom - 14)
     fondo = pygame.Surface(r.size, pygame.SRCALPHA)
-    pygame.draw.rect(fondo, (12, 24, 22, 220), fondo.get_rect(), border_radius=r.h // 2)
+    pygame.draw.rect(fondo, (12, 24, 22, 220), fondo.get_rect(), border_radius=12)
     surface.blit(fondo, r.topleft)
-    surface.blit(img, img.get_rect(center=r.center))
+    for i, img in enumerate(imagenes):
+        surface.blit(img, (r.x + 12, r.y + 7 + i * f.get_linesize()))
 
 
 ATAJOS = (
@@ -414,6 +418,8 @@ class BarraLateral:
             pygame.draw.rect(s, BORDER, (self.x + self.ANCHO - 6, 0, 4, self.alto), border_radius=2)
             pygame.draw.rect(s, ACCENT, (self.x + self.ANCHO - 6, y, 4, alto_barra), border_radius=2)
 
+        self._dibujar_ayuda(s, mouse, ahora)
+
     def _dibujar_contenido(self, s, mouse, ahora):
         e = self.estado()
         x, w = self.x + self.PAD, self.ANCHO - 2 * self.PAD
@@ -508,8 +514,10 @@ class BarraLateral:
             box(s, rect, CARD, 9)
             text(s, label, (rect.x + 10, rect.y + 4), MUTED, 10, width=rect.w - 16)
             text(s, valor, (rect.x + 10, rect.y + 17), TEXT, 16, True, width=rect.w - 16)
-        # tooltip
-        n = self._nombre_contenido(mouse)
+    def _dibujar_ayuda(self, s, mouse, ahora):
+        # La ayuda pertenece a la ventana, no al lienzo recortado del panel.
+        e = self.estado()
+        n = self.nombre_en(mouse)
         if n != self.sobre:
             self.sobre, self.t_sobre = n, ahora
         if n and ahora - self.t_sobre > 450:
@@ -521,7 +529,7 @@ class BarraLateral:
                 datos = AYUDA_BOTONES.get(n)
             if datos:
                 motivo = None if self.habilitado(n) else self.razon(n)
-                tooltip(s, (self.rects[n].left, self.rects[n].bottom), datos[0], datos[1], datos[2], motivo)
+                tooltip(s, (self.rects[n].left, self.rects[n].bottom - self.scroll), datos[0], datos[1], datos[2], motivo)
 
 
 # ---------------------------------------------------------------- ventana de configuracion

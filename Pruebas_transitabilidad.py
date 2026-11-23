@@ -453,8 +453,8 @@ indice_frame_npc = 0
 tiempo_animacion_npc = 0.0
 moviendo_npc = False
 
-# Se muestra desde el inicio. La tecla H permite ocultarlo/mostrarlo.
-mostrar_hitbox_pies = True
+# Oculta al iniciar. El boton Hitbox o la tecla H alternan su visualizacion.
+mostrar_hitbox_pies = False
 
 
 # ============================================================
@@ -721,6 +721,17 @@ def avanzar_preparacion_alt():
         mensaje = "Mapa preparado. Selecciona inicio y destino, o ejecuta la busqueda."
 
 
+def coordenadas_mouse_mapa(pos):
+    """Pixel del mapa bajo el mouse, incluyendo terrenos no transitables."""
+    if not (0 <= pos[0] < ANCHO_VISTA and 0 <= pos[1] < ALTO_VISTA):
+        return None
+    rect = mapa_escalado.get_rect(topleft=(int(desplazamiento_x), int(desplazamiento_y)))
+    if not rect.collidepoint(pos):
+        return None
+    return ((pos[0] - rect.x) * ancho_mapa // rect.w,
+            (pos[1] - rect.y) * alto_mapa // rect.h)
+
+
 def mouse_a_nodo(pos):
     if not (0 <= pos[0] < ANCHO_VISTA and 0 <= pos[1] < ALTO_VISTA):
         return None
@@ -844,7 +855,7 @@ def avanzar_busqueda():
 def animar_recorrido():
     global animando, mensaje, seguimiento_camara, encuadrando_npc, progreso_visual
     global zoom
-    if tarea_busqueda is None and ruta_encontrada is not None and not animando and not comparando:
+    if boton_habilitado("Animar recorrido"):
         restaurar_escenario_inicial()   # mapa limpio + ruta inicial + misma semilla
         ubicar_en_inicio()
         zoom = min(zoom_maximo, max(zoom, ZOOM_SEGUIMIENTO))
@@ -1811,7 +1822,8 @@ def boton_habilitado(nombre):
     if comparando or preparacion_alt is not None:
         return False
     if nombre == "Animar recorrido":
-        return tarea_busqueda is None and ruta_encontrada is not None and not animando
+        return (tarea_busqueda is None and ruta_encontrada is not None and not animando
+                and algoritmo_activo == algoritmo_seleccionado)
     if nombre == "Obstaculo ahora":
         return (animando and tarea_busqueda is None and not pausa_replan
                 and not encuadrando_npc)
@@ -1928,7 +1940,10 @@ def razon_deshabilitado(nombre):
         return "Hay una búsqueda en curso."
     if nombre == "animar":
         if animando: return "El NPC ya está en recorrido."
-        return "Primero ejecuta una búsqueda."
+        if tarea_busqueda is not None: return "Espera a que termine la búsqueda."
+        if algoritmo_activo != algoritmo_seleccionado:
+            return "Primero ejecuta la búsqueda con el algoritmo seleccionado."
+        return "Primero ejecuta una búsqueda que encuentre una ruta."
     if nombre == "agregar":
         return "Disponible solo durante el recorrido."
     if nombre == "limpiar":
@@ -2034,7 +2049,11 @@ def dibujar_superposiciones():
     if mostrar_zonas_bloqueo and gestor_obstaculos.obstaculos: items.append(((255, 80, 80), "Zona de bloqueo", "caja"))
     ui.leyenda(pantalla, vista, items)
     if not animando:
-        ui.ayuda_visor(pantalla, vista, "Clic: inicio y destino   ·   Arrastrar: mover   ·   Rueda: zoom   ·   R: centrar   ·   F1: atajos")
+        ayuda = "Clic: inicio y destino   ·   Arrastrar: mover   ·   Rueda: zoom   ·   R: centrar   ·   F1: atajos"
+        coordenadas = coordenadas_mouse_mapa(pygame.mouse.get_pos()) if pygame.mouse.get_focused() else None
+        if coordenadas is not None:
+            ayuda += f"   |   X: {coordenadas[0]}   Y: {coordenadas[1]}"
+        ui.ayuda_visor(pantalla, vista, ayuda)
     if mostrar_ayuda:
         ui.panel_atajos(pantalla, vista)
     pantalla.set_clip(None)
