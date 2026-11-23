@@ -1,7 +1,7 @@
 """Sprite, hitbox, movimiento y dibujo del NPC y su rastro."""
 
 import pygame
-import interfaz_pygame as ui
+from . import interfaz_pygame as ui
 
 class NPC:
     """Servicio con referencia a la aplicacion; no copia matrices ni mantiene globals."""

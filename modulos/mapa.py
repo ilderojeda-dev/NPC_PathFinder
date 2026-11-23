@@ -1,6 +1,6 @@
 """Carga del mapa y matrices de transitabilidad; conserva una sola instancia de cada matriz."""
 
-from obstaculos_dinamicos import GestorObstaculosDinamicos
+from .obstaculos_dinamicos import GestorObstaculosDinamicos
 import numpy as np
 from time import perf_counter
 import pygame

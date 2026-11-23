@@ -2,7 +2,7 @@
 
 import numpy as np
 import pygame
-import interfaz_pygame as ui
+from . import interfaz_pygame as ui
 
 class VisualizadorSubgrafo:
     """Ventana secundaria: elige una region y muestra sus nodos validos y conexiones.

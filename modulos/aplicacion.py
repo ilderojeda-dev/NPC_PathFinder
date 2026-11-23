@@ -1,19 +1,19 @@
 """Inicializacion, eventos y coordinacion de NPC PathFinder. Importar no abre ventanas."""
 
-from algoritmos_busqueda import ALGORITMOS_DISPONIBLES
+from .algoritmos_busqueda import ALGORITMOS_DISPONIBLES
 from pathlib import Path
-from obstaculos_dinamicos import TAMANOS
+from .obstaculos_dinamicos import TAMANOS
 import os
 import pygame
-import interfaz_pygame as ui
-from mapa import Mapa
-from camara import Camara
-from npc import NPC
-from navegacion import Navegacion
-from estadisticas import Estadisticas
-from informes import Informes
-from comparacion import Comparacion
-from visualizador_subgrafo import Subgrafos
+from . import interfaz_pygame as ui
+from .mapa import Mapa
+from .camara import Camara
+from .npc import NPC
+from .navegacion import Navegacion
+from .estadisticas import Estadisticas
+from .informes import Informes
+from .comparacion import Comparacion
+from .visualizador_subgrafo import Subgrafos
 
 def configurar_dpi():
     os.environ.setdefault('SDL_WINDOWS_DPI_AWARENESS', 'permonitorv2')
@@ -44,7 +44,7 @@ class Aplicacion:
         self.comparacion = Comparacion(self)
         self.visualizador_subgrafo_servicio = Subgrafos(self)
         configurar_dpi()
-        self.CARPETA = Path(__file__).resolve().parent
+        self.CARPETA = Path(__file__).resolve().parents[1]
         self.CARPETA_DATOS = self.CARPETA / 'Datos_generados'
         self.CARPETA_DATOS.mkdir(exist_ok=True)
         self.RUTA_IMAGEN = self.CARPETA / 'Recursos' / 'mapa_bosque.png'

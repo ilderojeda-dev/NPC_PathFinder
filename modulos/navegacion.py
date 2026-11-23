@@ -1,10 +1,10 @@
 """Coordina las busquedas por lotes, rutas y replanificaciones; no implementa algoritmos."""
 
-from algoritmos_busqueda import MotorPathfinding
+from .algoritmos_busqueda import MotorPathfinding
 import numpy as np
 from time import perf_counter
 import pygame
-import interfaz_pygame as ui
+from . import interfaz_pygame as ui
 
 class Navegacion:
     """Servicio con referencia a la aplicacion; no copia matrices ni mantiene globals."""

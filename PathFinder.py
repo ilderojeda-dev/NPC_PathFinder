@@ -1,6 +1,6 @@
 """Punto de entrada. Ejecutar con: py PathFinder.py."""
 
-from aplicacion import Aplicacion
+from modulos.aplicacion import Aplicacion
 
 
 def main():

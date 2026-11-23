@@ -2,7 +2,7 @@
 
 import csv
 import pygame
-import interfaz_pygame as ui
+from . import interfaz_pygame as ui
 
 class VentanaInforme:
     """Informe individual seleccionable o comparacion estatica independiente."""

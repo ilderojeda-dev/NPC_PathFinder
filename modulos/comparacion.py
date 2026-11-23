@@ -1,6 +1,6 @@
 """Comparacion estatica por lotes con el mismo mapa, inicio y destino."""
 
-from algoritmos_busqueda import ALGORITMOS_DISPONIBLES
+from .algoritmos_busqueda import ALGORITMOS_DISPONIBLES
 
 class Comparacion:
     """Servicio con referencia a la aplicacion; no copia matrices ni mantiene globals."""
